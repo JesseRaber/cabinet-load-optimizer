@@ -1,0 +1,12 @@
+services:
+  load-optimizer:
+    build: .
+    container_name: cabinet-load-optimizer
+    ports:
+      - "8085:8085"
+    volumes:
+      - /volume1/Mozaik-UW/Jobs:/data/Jobs:ro   # Mozaik jobs share (read-only)
+      - ./cache:/cache                           # extracted job cache
+    environment:
+      - JOBS_DIR=/data/Jobs
+    restart: unless-stopped
