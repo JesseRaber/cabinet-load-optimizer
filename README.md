@@ -29,9 +29,25 @@ sudo docker compose up -d --build
   Mozaik data.
 - Extracted job lists are cached in `./cache/` so restarts are instant.
 
+## Manual upload
+If a job isn't on the watched share — a `JobData.db` emailed to you, one from a
+USB stick, or a folder outside `/volume1/Mozaik-UW/Jobs` — use the
+**Upload JobData.db** box in the Mozaik Job panel. Click it or drag the file on,
+and the cabinets import immediately using the exact same extraction as the
+watcher.
+
+Uploaded jobs are marked with `⬆` in the job picker, persist in the cache across
+restarts, and can be removed with the **Remove** link. Re-uploading the same job
+replaces it instead of creating a duplicate. Max upload size is 64 MB
+(override with the `MAX_UPLOAD_MB` env var).
+
 ## API
 - `GET /api/jobs` — all jobs, newest first
 - `GET /api/jobs/<folder-name>/cabinets` — full cabinet list in inches
+- `POST /api/upload` — manually upload a `JobData.db` (multipart field `file`);
+  returns the extracted job, same shape as the endpoint above
+- `DELETE /api/jobs/<job>` — remove a manually uploaded job (watched jobs are
+  read-only and cannot be deleted)
 
 ## Notes
 - Dimensions are converted from Mozaik's internal millimeters to inches,

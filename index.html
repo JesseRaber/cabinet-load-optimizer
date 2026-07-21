@@ -97,6 +97,26 @@
                     <button type="button" onclick="refreshJobs()" title="Refresh job list" class="bg-emerald-100 text-emerald-700 rounded px-3 border border-emerald-200 hover:bg-emerald-200"><i data-lucide="refresh-cw" class="w-4 h-4"></i></button>
                 </div>
                 <div id="job-status" class="text-xs text-emerald-700 mt-2"></div>
+
+                <!-- Manual JobData.db upload -->
+                <div class="mt-3 pt-3 border-t border-emerald-200">
+                    <div class="flex items-center justify-between mb-2">
+                        <h4 class="text-xs font-bold text-emerald-900 uppercase tracking-wide flex items-center gap-1.5">
+                            <i data-lucide="upload" class="w-3.5 h-3.5"></i> Upload JobData.db
+                        </h4>
+                        <button type="button" id="btn-remove-upload" onclick="removeUploadedJob()"
+                                class="hidden text-[11px] text-red-600 hover:text-red-800 underline">Remove</button>
+                    </div>
+                    <input type="file" id="db-file" accept=".db,.sqlite,.sqlite3,application/x-sqlite3" class="hidden">
+                    <div id="db-drop"
+                         onclick="document.getElementById('db-file').click()"
+                         class="border-2 border-dashed border-emerald-300 rounded-lg p-4 text-center cursor-pointer bg-white hover:bg-emerald-50 hover:border-emerald-500 transition-colors">
+                        <i data-lucide="database-backup" class="w-6 h-6 mx-auto text-emerald-500 mb-1"></i>
+                        <div class="text-xs font-semibold text-emerald-800">Click to choose, or drop a file here</div>
+                        <div class="text-[11px] text-emerald-600 mt-0.5">Mozaik <span class="font-mono">JobData.db</span> from any job folder</div>
+                    </div>
+                    <div id="upload-status" class="text-xs mt-2 hidden"></div>
+                </div>
             </div>
 
             <!-- Add Item Form -->
@@ -256,24 +276,28 @@
 
         // --- 2. UI HANDLERS ---
         // --- MOZAIK JOB API ---
-        async function refreshJobs() {
+        let jobIndex = {};   // job key -> summary (so we know which ones were uploaded)
+
+        async function refreshJobs(selectKey) {
             const sel = document.getElementById('job-select');
             try {
                 const jobs = await (await fetch('/api/jobs')).json();
+                jobIndex = {};
+                jobs.forEach(j => { jobIndex[j.job] = j; });
                 sel.innerHTML = '<option value="">— Select a job —</option>' + jobs.map(j =>
-                    `<option value="${encodeURIComponent(j.job)}">${j.jobName} — ${j.customer || 'no customer'} (${j.cabinetCount} cabs, ${j.updated.replace('T',' ')})</option>`
+                    `<option value="${encodeURIComponent(j.job)}">${j.source === 'upload' ? '⬆ ' : ''}${j.jobName} — ${j.customer || 'no customer'} (${j.cabinetCount} cabs, ${j.updated.replace('T',' ')})</option>`
                 ).join('');
+                if (selectKey) sel.value = encodeURIComponent(selectKey);
                 document.getElementById('job-status').innerText = `${jobs.length} jobs found`;
             } catch (e) {
                 sel.innerHTML = '<option value="">API unavailable</option>';
                 document.getElementById('job-status').innerText = 'Cannot reach watcher API.';
             }
+            onJobSelectionChange();
         }
 
-        async function loadSelectedJob() {
-            const job = document.getElementById('job-select').value;
-            if (!job) return alert('Select a job first.');
-            const data = await (await fetch(`/api/jobs/${job}/cabinets`)).json();
+        // Turn an extracted job payload into the inventory list.
+        function applyJobData(data) {
             items = [];
             let id = 1;
             for (const c of data.cabinets) {
@@ -291,9 +315,89 @@
                 `Loaded ${items.length} cabinets from "${data.jobName}" — select a trailer and Calculate.`;
         }
 
+        async function loadSelectedJob() {
+            const job = document.getElementById('job-select').value;
+            if (!job) return alert('Select a job first.');
+            const data = await (await fetch(`/api/jobs/${job}/cabinets`)).json();
+            applyJobData(data);
+        }
+
+        // --- MANUAL JobData.db UPLOAD ---
+        function setUploadStatus(msg, kind) {
+            const el = document.getElementById('upload-status');
+            el.classList.remove('hidden', 'text-emerald-700', 'text-red-600', 'text-slate-500');
+            el.classList.add(kind === 'error' ? 'text-red-600'
+                           : kind === 'busy' ? 'text-slate-500' : 'text-emerald-700');
+            el.innerText = msg;
+        }
+
+        async function uploadJobFile(file) {
+            if (!file) return;
+            setUploadStatus(`Reading ${file.name}…`, 'busy');
+            const fd = new FormData();
+            fd.append('file', file);
+            try {
+                const res = await fetch('/api/upload', { method: 'POST', body: fd });
+                let data;
+                try { data = await res.json(); }
+                catch { throw new Error(`Server returned ${res.status}`); }
+                if (!res.ok) throw new Error(data.error || `Upload failed (${res.status})`);
+
+                applyJobData(data);                 // load it straight into the inventory
+                await refreshJobs(data.job);        // and add it to the picker
+                setUploadStatus(`Imported ${data.cabinetCount} cabinets from "${data.jobName}".`, 'ok');
+            } catch (err) {
+                setUploadStatus(err.message, 'error');
+            }
+        }
+
+        function onJobSelectionChange() {
+            const key = decodeURIComponent(document.getElementById('job-select').value || '');
+            const isUpload = jobIndex[key] && jobIndex[key].source === 'upload';
+            document.getElementById('btn-remove-upload').classList.toggle('hidden', !isUpload);
+        }
+
+        async function removeUploadedJob() {
+            const raw = document.getElementById('job-select').value;
+            const key = decodeURIComponent(raw || '');
+            if (!key || !jobIndex[key]) return;
+            if (!confirm(`Remove uploaded job "${jobIndex[key].jobName}" from the list?`)) return;
+            try {
+                const res = await fetch(`/api/jobs/${raw}`, { method: 'DELETE' });
+                if (!res.ok) throw new Error('Could not remove that job.');
+                await refreshJobs();
+                setUploadStatus('Uploaded job removed.', 'ok');
+            } catch (err) {
+                setUploadStatus(err.message, 'error');
+            }
+        }
+
+        function initUploadUI() {
+            const input = document.getElementById('db-file');
+            const drop = document.getElementById('db-drop');
+
+            input.addEventListener('change', e => {
+                uploadJobFile(e.target.files[0]);
+                e.target.value = '';   // allow re-picking the same file
+            });
+
+            ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => {
+                e.preventDefault();
+                drop.classList.add('bg-emerald-100', 'border-emerald-600');
+            }));
+            ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => {
+                e.preventDefault();
+                drop.classList.remove('bg-emerald-100', 'border-emerald-600');
+            }));
+            drop.addEventListener('drop', e => uploadJobFile(e.dataTransfer.files[0]));
+
+            document.getElementById('job-select').addEventListener('change', onJobSelectionChange);
+        }
+
         function initUI() {
             lucide.createIcons();
             items = [];
+            initUploadUI();
             refreshJobs();
             renderInventory();
             init3D();
