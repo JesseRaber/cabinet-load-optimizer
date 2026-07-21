@@ -3,7 +3,1196 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cabinet Load Optimizer</title><!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Cabinet Load Optimizer</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<!-- sql.js: reads a Mozaik JobData.db right in the browser, no server needed -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
+<style>
+  body { margin:0; }
+  .tabbtn { padding:.5rem 1rem; border-radius:.375rem .375rem 0 0; font-weight:600; font-size:.875rem; color:#64748b; border-bottom:2px solid transparent; }
+  .tabbtn.active { color:#1e3a8a; border-bottom-color:#1e3a8a; background:#fff; }
+  input[type=number], input[type=text], select, textarea { border:1px solid #cbd5e1; border-radius:.375rem; padding:.4rem .5rem; font-size:.875rem; width:100%; outline:none; }
+  input:focus, select:focus, textarea:focus { border-color:#2563eb; box-shadow:0 0 0 2px rgba(37,99,235,.15); }
+  .lbl { font-size:.7rem; font-weight:700; text-transform:uppercase; color:#64748b; display:block; margin-bottom:.15rem; }
+  .btn { display:inline-flex; align-items:center; gap:.4rem; padding:.5rem 1rem; border-radius:.375rem; font-weight:600; font-size:.875rem; cursor:pointer; }
+  .btn-blue { background:#1e3a8a; color:#fff; } .btn-blue:hover { background:#1e40af; }
+  .btn-green { background:#059669; color:#fff; } .btn-green:hover { background:#047857; }
+  .btn-gray { background:#e2e8f0; color:#334155; } .btn-gray:hover { background:#cbd5e1; }
+  .btn-red { background:#fee2e2; color:#b91c1c; } .btn-red:hover { background:#fecaca; }
+  table.grid { width:100%; border-collapse:collapse; font-size:.8rem; }
+  table.grid th { background:#f1f5f9; text-align:left; padding:.4rem .5rem; border:1px solid #e2e8f0; font-size:.7rem; text-transform:uppercase; color:#475569; }
+  table.grid td { padding:.35rem .5rem; border:1px solid #e2e8f0; }
+  #print-area { display:none; }
+  @media print {
+    body * { visibility:hidden; }
+    #print-area, #print-area * { visibility:visible; }
+    #print-area { display:block !important; position:absolute; left:0; top:0; width:100%; }
+    .page-break { page-break-before:always; }
+    @page { margin: 0.5in; }
+  }
+</style>
+</head>
+<body class="bg-slate-100 text-slate-900">
+
+<!-- ============ APP ============ -->
+<div id="app" class="min-h-screen flex flex-col">
+  <header class="bg-slate-900 text-white px-5 py-3 flex flex-wrap gap-3 justify-between items-center shadow">
+    <div class="flex items-center gap-2">
+      <span class="text-2xl">🚚</span>
+      <div>
+        <h1 class="text-lg font-bold leading-tight">Cabinet Load Optimizer</h1>
+        <div class="text-[11px] text-slate-400">Mozaik import • 3D nesting • printable load plans</div>
+      </div>
+    </div>
+    <div class="flex items-center gap-2 flex-wrap">
+      <input type="text" id="job-name" placeholder="Job name" class="!w-44 !bg-slate-800 !border-slate-600 text-white text-sm" />
+      <label class="text-xs text-slate-300">Clearance
+        <input type="number" id="gap" value="1" min="0.25" step="0.25" class="!w-16 !bg-slate-800 !border-slate-600 text-white ml-1 inline-block" />"
+      </label>
+      <label class="text-xs text-slate-300 flex items-center gap-1" title="Load cabinets lying on their backs (face up) instead of standing them up. Recommended — matches how the crew carries them in.">
+        <input type="checkbox" id="lay-flat" checked class="w-4 h-4"> Lay flat
+      </label>
+      <label class="text-xs text-slate-300 flex items-center gap-1">
+        <input type="checkbox" id="allow-stack" checked class="w-4 h-4"> Stacking
+      </label>
+      <label class="text-xs text-slate-300" title="Plywood sheet laid over the base deck so a second layer can be walked on and stacked. Raises the stacking surface by this much.">Plywood
+        <input type="number" id="plywood" value="0.5" min="0" step="0.25" class="!w-14 !bg-slate-800 !border-slate-600 text-white ml-1 inline-block" />"
+      </label>
+      <label class="text-xs text-slate-300" title="Extra safety room, on top of the tip-up diagonal, required before a cabinet may be stood upright. A cabinet is only stood up if sqrt(height² + depth²) + this margin fits under the ceiling.">Stand-up margin
+        <input type="number" id="stand-clear" value="3" min="0" step="1" class="!w-14 !bg-slate-800 !border-slate-600 text-white ml-1 inline-block" />"
+      </label>
+      <button class="btn btn-green" onclick="optimize()">⚙ Optimize Load</button>
+      <button class="btn btn-gray" onclick="doPrint()">🖨 Print Plans</button>
+    </div>
+  </header>
+
+  <nav class="bg-slate-200 px-5 pt-2 flex gap-1 border-b border-slate-300">
+    <button class="tabbtn active" data-tab="tab-cabinets" onclick="showTab(this)">1 · Cabinets</button>
+    <button class="tabbtn" data-tab="tab-trailers" onclick="showTab(this)">2 · Trailers</button>
+    <button class="tabbtn" data-tab="tab-3d" onclick="showTab(this)">3 · 3D Load Plan</button>
+    <button class="tabbtn" data-tab="tab-plans" onclick="showTab(this)">4 · Floorplan &amp; Elevations</button>
+  </nav>
+
+  <main class="flex-1 p-5">
+
+    <!-- ===== TAB 1: CABINETS ===== -->
+    <section id="tab-cabinets">
+      <div class="grid lg:grid-cols-3 gap-5">
+        <div class="lg:col-span-1 space-y-4">
+          <div class="bg-white rounded-lg shadow p-4">
+            <h2 class="font-bold text-sm mb-1">Import Mozaik Job File</h2>
+            <p class="text-xs text-slate-500 mb-2">Load a Mozaik <b>JobData.db</b> straight from the job folder &mdash; every cabinet, room number and size comes in automatically.</p>
+            <input type="file" id="db-file" accept=".db,.sqlite,.sqlite3" class="hidden">
+            <div id="db-drop" onclick="el('db-file').click()"
+                 class="border-2 border-dashed border-emerald-300 rounded-lg px-3 py-5 text-center cursor-pointer bg-emerald-50/40 hover:bg-emerald-50 hover:border-emerald-500 transition-colors">
+              <svg class="w-7 h-7 mx-auto text-emerald-500 mb-1" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
+                <ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.66 3.58 3 8 3s8-1.34 8-3V6"/><path d="M4 12v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/>
+              </svg>
+              <div class="text-xs font-bold text-emerald-800">Click to choose, or drop the file here</div>
+              <div class="text-[11px] text-emerald-600 mt-0.5">Mozaik <span class="font-mono">JobData.db</span></div>
+            </div>
+            <div id="db-msg" class="text-xs mt-2"></div>
+          </div>
+          <div class="bg-white rounded-lg shadow p-4">
+            <h2 class="font-bold text-sm mb-1">Paste from Mozaik</h2>
+            <p class="text-xs text-slate-500 mb-2">Copy the cabinet table from Mozaik and paste below. Columns: Qty, Name, W, H, D, Description, Finished Ends, Room/Cab #. Fractions like <b>34 1/2</b> are handled.</p>
+            <textarea id="mozaik-paste" rows="8" class="font-mono !text-xs" placeholder="1	90° Base Corner	36	34 1/2	36	Base - Corner 90°	None	R1C3"></textarea>
+            <div class="flex gap-2 mt-2">
+              <button class="btn btn-blue flex-1 justify-center" onclick="importMozaik()">Import</button>
+              <button class="btn btn-gray" onclick="loadSample()">Sample</button>
+            </div>
+            <div id="import-msg" class="text-xs mt-2"></div>
+          </div>
+          <div class="bg-white rounded-lg shadow p-4">
+            <h2 class="font-bold text-sm mb-2">Add Cabinet Manually</h2>
+            <div class="grid grid-cols-2 gap-2">
+              <div class="col-span-2"><span class="lbl">Name</span><input id="m-name" type="text" placeholder="Custom Base Cab"></div>
+              <div><span class="lbl">Room/Cab # *</span><input id="m-rc" type="text" placeholder="R1C4"></div>
+              <div><span class="lbl">Qty</span><input id="m-qty" type="number" value="1" min="1"></div>
+              <div><span class="lbl">Width"</span><input id="m-w" type="text" placeholder='24 or 34 1/2'></div>
+              <div><span class="lbl">Height"</span><input id="m-h" type="text"></div>
+              <div><span class="lbl">Depth"</span><input id="m-d" type="text"></div>
+              <div class="flex items-end pb-1"><label class="text-xs flex gap-1 items-center"><input type="checkbox" id="m-stack" checked class="w-4 h-4"> Can support stacking</label></div>
+            </div>
+            <button class="btn btn-blue w-full justify-center mt-3" onclick="addManual()">Add Cabinet</button>
+          </div>
+        </div>
+        <div class="lg:col-span-2">
+          <div class="bg-white rounded-lg shadow p-4">
+            <div class="flex justify-between items-center mb-3">
+              <h2 class="font-bold text-sm">Cabinet List <span id="cab-count" class="ml-1 text-xs bg-slate-200 rounded-full px-2 py-0.5"></span></h2>
+              <button class="btn btn-red !py-1 !px-2 text-xs" onclick="clearCabs()">Clear All</button>
+            </div>
+            <div class="overflow-auto max-h-[70vh]">
+              <table class="grid" id="cab-table">
+                <thead><tr><th>Room/Cab #</th><th>Name</th><th>W"</th><th>H"</th><th>D"</th><th>Description</th><th>Fin. Ends</th><th title="Other cabinets may be stacked on top of this one">Stack On</th><th></th></tr></thead>
+                <tbody id="cab-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== TAB 2: TRAILERS ===== -->
+    <section id="tab-trailers" class="hidden">
+      <div class="grid lg:grid-cols-3 gap-5">
+        <div class="lg:col-span-1">
+          <div class="bg-white rounded-lg shadow p-4">
+            <h2 class="font-bold text-sm mb-3">Trailer Profiles</h2>
+            <div id="trailer-list" class="space-y-2"></div>
+            <button class="btn btn-blue w-full justify-center mt-3" onclick="editTrailer(null)">＋ New Trailer</button>
+          </div>
+        </div>
+        <div class="lg:col-span-2">
+          <div class="bg-white rounded-lg shadow p-4" id="trailer-form-card">
+            <h2 class="font-bold text-sm mb-3" id="tf-title">New Trailer</h2>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div class="col-span-2"><span class="lbl">Trailer Name</span><input id="t-name" type="text" placeholder="24' Gooseneck"></div>
+              <div class="col-span-2"><span class="lbl">Type</span>
+                <select id="t-type" onchange="tfRefresh()">
+                  <option value="standard">Standard (bumper pull / box)</option>
+                  <option value="gooseneck">Gooseneck</option>
+                </select>
+              </div>
+              <div><span class="lbl">Interior Width"</span><input id="t-w" type="number" value="96"></div>
+              <div><span class="lbl">Interior Height"</span><input id="t-h" type="number" value="96"></div>
+              <div class="col-span-2"><span class="lbl" id="t-len-lbl">Interior Length" (rear doors → front wall)</span><input id="t-l" type="number" value="240"></div>
+            </div>
+
+            <!-- Gooseneck -->
+            <div id="tf-gn" class="hidden mt-4 border-t pt-3">
+              <h3 class="text-xs font-bold text-amber-700 uppercase mb-2">Gooseneck Area (raised deck at front)</h3>
+              <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+                <div><span class="lbl">Gooseneck length"</span><input id="t-gnl" type="number" value="60">
+                  <div class="text-[10px] text-slate-400 mt-0.5">length of the raised gooseneck floor area</div></div>
+                <div><span class="lbl">Gooseneck area height"</span><input id="t-gnh" type="number" value="48">
+                  <div class="text-[10px] text-slate-400 mt-0.5">headroom above the gooseneck floor</div></div>
+                <div class="flex items-end"><div class="text-xs bg-amber-50 border border-amber-200 rounded p-2 w-full" id="gn-rise-info">Deck rise: —</div></div>
+              </div>
+            </div>
+
+            <!-- V-nose -->
+            <div class="mt-4 border-t pt-3">
+              <label class="text-sm font-bold flex items-center gap-2"><input type="checkbox" id="t-vnose" class="w-4 h-4" onchange="tfRefresh()"> V-shaped front (V-nose)</label>
+              <div id="tf-v-std" class="hidden mt-2 grid grid-cols-2 gap-3">
+                <div><span class="lbl">Rear of trailer → start of V"</span><input id="t-vstart" type="number" value="216"></div>
+                <div><span class="lbl">Rear of trailer → front of V (tip)"</span><input id="t-vtip" type="number" value="240">
+                  <div class="text-[10px] text-slate-400 mt-0.5">used as total interior length when V-nose is on</div></div>
+              </div>
+              <div id="tf-v-gn" class="hidden mt-2 grid grid-cols-2 gap-3">
+                <div><span class="lbl">Start of gooseneck → start of V on sides"</span><input id="t-gnvd" type="number" value="36">
+                  <div class="text-[10px] text-slate-400 mt-0.5">V-shape only affects the gooseneck area; the main floor stays full width</div></div>
+              </div>
+            </div>
+
+            <!-- Wheel wells -->
+            <div class="mt-4 border-t pt-3">
+              <label class="text-sm font-bold flex items-center gap-2"><input type="checkbox" id="t-ww" class="w-4 h-4" onchange="tfRefresh()"> Wheel wells inside (both sides)</label>
+              <div id="tf-ww-fields" class="hidden mt-2 grid grid-cols-2 md:grid-cols-3 gap-3">
+                <div><span class="lbl">Well depth" (into trailer)</span><input id="t-wwd" type="number" value="8"></div>
+                <div><span class="lbl">Well height"</span><input id="t-wwh" type="number" value="12"></div>
+                <div><span class="lbl">Well length"</span><input id="t-wwl" type="number" value="60"></div>
+                <div><span class="lbl">Rear of trailer → back of well"</span><input id="t-wwr" type="number" value="60"></div>
+                <div><span class="lbl">Front of main floor → front of well" <span class="text-slate-400">(optional check)</span></span><input id="t-wwf" type="number" placeholder="optional"></div>
+                <div class="flex items-end"><div id="ww-check" class="text-xs rounded p-2 w-full"></div></div>
+              </div>
+            </div>
+
+            <!-- Rear door opening / ledge -->
+            <div class="mt-4 border-t pt-3">
+              <h3 class="text-xs font-bold text-slate-600 uppercase mb-2">Rear Door Opening <span class="text-slate-400 normal-case font-normal">— the frame lip is usually a bit smaller than the inside</span></h3>
+              <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+                <div><span class="lbl">Opening width"</span><input id="t-rw" type="number" placeholder="= interior width">
+                  <div class="text-[10px] text-slate-400 mt-0.5">clear width between the door jambs; blank = full width</div></div>
+                <div><span class="lbl">Opening height"</span><input id="t-rh" type="number" placeholder="= interior height">
+                  <div class="text-[10px] text-slate-400 mt-0.5">clear height under the header; blank = full height</div></div>
+                <div><span class="lbl">Ledge depth"</span><input id="t-rd" type="number" value="3">
+                  <div class="text-[10px] text-slate-400 mt-0.5">how far forward the lip/frame reaches in from the doors</div></div>
+              </div>
+            </div>
+
+            <div class="flex gap-2 mt-5">
+              <button class="btn btn-blue" onclick="saveTrailer()">💾 Save Trailer</button>
+              <button class="btn btn-gray" onclick="editTrailer(null)">Reset Form</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== TAB 3: 3D ===== -->
+    <section id="tab-3d" class="hidden">
+      <div class="flex gap-4 flex-col lg:flex-row">
+        <div class="flex-1 bg-slate-800 rounded-lg overflow-hidden relative" style="height:75vh">
+          <div id="canvas3d" class="w-full h-full cursor-move"></div>
+          <div class="absolute top-3 right-3 bg-white/95 rounded-lg shadow-lg p-3 w-60 text-sm">
+            <div class="font-bold border-b pb-1 mb-2">Load Stats</div>
+            <div class="flex justify-between"><span class="text-slate-500">Trailer</span><b id="s-trailer" class="text-right text-xs"></b></div>
+            <div class="flex justify-between"><span class="text-slate-500">Loaded</span><b id="s-loaded" class="text-emerald-600">0</b></div>
+            <div class="flex justify-between"><span class="text-slate-500">Did not fit</span><b id="s-failed" class="text-red-600">0</b></div>
+            <div class="flex justify-between"><span class="text-slate-500">Floor used</span><b id="s-floor">0%</b></div>
+            <div class="flex justify-between"><span class="text-slate-500">Volume used</span><b id="s-vol">0%</b></div>
+            <div id="s-faillist" class="mt-2 text-xs text-red-600 max-h-24 overflow-auto"></div>
+            <div class="text-[10px] text-slate-400 mt-2 border-t pt-1">Drag: rotate · Right-drag: pan · Scroll: zoom<br>Rear doors = open end (red line)</div>
+          </div>
+        </div>
+        <div class="w-full lg:w-72 bg-white rounded-lg shadow p-3 overflow-auto" style="max-height:75vh">
+          <div class="font-bold text-sm mb-2">Loading Sequence <span class="text-[10px] font-normal text-slate-400">(front → rear)</span></div>
+          <div id="seq-list" class="space-y-1 text-xs"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== TAB 4: PLANS ===== -->
+    <section id="tab-plans" class="hidden">
+      <div class="bg-white rounded-lg shadow p-5 mb-4 flex justify-between items-center">
+        <div class="text-sm text-slate-600">Preview of printable plans. Use <b>Print Plans</b> (top right) for the paper copy — it includes the floorplan, elevations and manifest with every cabinet number.</div>
+        <button class="btn btn-blue" onclick="doPrint()">🖨 Print</button>
+      </div>
+      <div id="plans-preview" class="space-y-6"></div>
+    </section>
+  </main>
+</div>
+
+<!-- ============ PRINT AREA ============ -->
+<div id="print-area" class="bg-white text-black"></div>
+
+<script>
+'use strict';
+/* =================== STATE =================== */
+const LS = { trailers:'clo_trailers_v1', cabs:'clo_cabs_v1', misc:'clo_misc_v1' };
+let trailers = [], cabinets = [], activeTrailerId = null, results = null, editingTrailerId = null;
+const ROOM_COLORS = ['#3b82f6','#f97316','#10b981','#8b5cf6','#ef4444','#06b6d4','#eab308','#ec4899','#84cc16','#6366f1'];
+
+function miscState(){
+  return { activeTrailerId, job:el('job-name').value, gap:el('gap').value,
+    stack:el('allow-stack').checked,
+    layFlat: el('lay-flat') ? el('lay-flat').checked : true,
+    plywood: el('plywood') ? el('plywood').value : '0.5',
+    standClear: el('stand-clear') ? el('stand-clear').value : '3' };
+}
+function saveAll(){
+  try{
+    localStorage.setItem(LS.trailers, JSON.stringify(trailers));
+    localStorage.setItem(LS.cabs, JSON.stringify(cabinets));
+    localStorage.setItem(LS.misc, JSON.stringify(miscState()));
+  }catch(e){ /* storage blocked (private mode / file://) — server sync still runs */ }
+  pushServer();
+}
+
+/* ---- Durable settings on the NAS ---------------------------------------------
+   Trailer profiles + options are also stored on the server (settings.json next to
+   the job cache) so they survive browser clears and are shared across every
+   device/tablet that opens the app. If the app is opened as a local file or the
+   server has no settings endpoint, these calls fail silently and localStorage is
+   used on its own — nothing breaks. */
+const SETTINGS_URL = 'api/settings';
+let _serverReady = false, _serverTimer = null;
+function pushServer(){
+  if(!_serverReady) return;                 // don't overwrite the server before we've read it
+  if(_serverTimer) clearTimeout(_serverTimer);
+  _serverTimer = setTimeout(()=>{
+    try{
+      fetch(SETTINGS_URL, { method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ trailers, misc: miscState() }) }).catch(()=>{});
+    }catch(e){}
+  }, 500);
+}
+function pullServer(){
+  const done = ()=>{ _serverReady = true; };
+  try{
+    fetch(SETTINGS_URL).then(r=> r.ok ? r.json() : null).then(s=>{
+      if(s && Array.isArray(s.trailers) && s.trailers.length){
+        trailers = s.trailers;
+        const m = s.misc || {};
+        if(m.activeTrailerId) activeTrailerId = m.activeTrailerId;
+        if(m.job!=null) el('job-name').value = m.job;
+        if(m.gap!=null) el('gap').value = m.gap;
+        if(m.stack!==undefined) el('allow-stack').checked = m.stack;
+        if(m.layFlat!==undefined && el('lay-flat')) el('lay-flat').checked = m.layFlat;
+        if(m.plywood!=null && el('plywood')) el('plywood').value = m.plywood;
+        if(m.standClear!=null && el('stand-clear')) el('stand-clear').value = m.standClear;
+        if(!trailers.find(t=>t.id===activeTrailerId)) activeTrailerId = trailers[0].id;
+        try{ localStorage.setItem(LS.trailers, JSON.stringify(trailers)); localStorage.setItem(LS.misc, JSON.stringify(miscState())); }catch(e){}
+        renderTrailers(); editTrailer(null);
+      }
+      done();
+    }).catch(done);
+  }catch(e){ done(); }
+}
+function loadAll(){
+  try{ trailers = JSON.parse(localStorage.getItem(LS.trailers))||[]; }catch(e){ trailers=[]; }
+  try{ cabinets = JSON.parse(localStorage.getItem(LS.cabs))||[]; }catch(e){ cabinets=[]; }
+  try{
+    const m = JSON.parse(localStorage.getItem(LS.misc))||{};
+    activeTrailerId = m.activeTrailerId||null;
+    if(m.job) el('job-name').value = m.job;
+    if(m.gap) el('gap').value = m.gap;
+    if(m.stack!==undefined) el('allow-stack').checked = m.stack;
+    if(m.layFlat!==undefined && el('lay-flat')) el('lay-flat').checked = m.layFlat;
+    if(m.plywood!==undefined && el('plywood')) el('plywood').value = m.plywood;
+    if(m.standClear!==undefined && el('stand-clear')) el('stand-clear').value = m.standClear;
+  }catch(e){}
+  if(trailers.length===0){
+    trailers.push({ id:'t'+Date.now(), name:'8×8×20 Enclosed (example)', type:'standard', w:96, h:96, len:240,
+      vnose:false, vstart:0, vtip:0, gnl:0, gnh:0, gnvd:0, ww:false, wwd:8, wwh:12, wwl:60, wwr:60, wwf:null });
+    activeTrailerId = trailers[0].id;
+  }
+  if(!activeTrailerId || !trailers.find(t=>t.id===activeTrailerId)) activeTrailerId = trailers[0].id;
+}
+const el = id => document.getElementById(id);
+
+/* =================== TABS =================== */
+function showTab(btn){
+  document.querySelectorAll('.tabbtn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  ['tab-cabinets','tab-trailers','tab-3d','tab-plans'].forEach(t=>el(t).classList.add('hidden'));
+  el(btn.dataset.tab).classList.remove('hidden');
+  if(btn.dataset.tab==='tab-3d'){ init3D(); resize3D(); }
+  if(btn.dataset.tab==='tab-plans'){ renderPlansPreview(); }
+}
+
+/* =================== MOZAIK PARSING =================== */
+function parseDim(s){
+  if(s===undefined||s===null) return NaN;
+  s = (''+s).trim().replace(/["”]/g,'');
+  if(!s) return NaN;
+  // "34 1/2", "34-1/2", "1/2", "34.5", "34"
+  let m = s.match(/^(\d+(?:\.\d+)?)?[\s-]*?(?:(\d+)\s*\/\s*(\d+))?$/);
+  if(!m || (m[1]===undefined && m[2]===undefined)) return NaN;
+  let v = m[1] ? parseFloat(m[1]) : 0;
+  if(m[2] && m[3] && parseFloat(m[3])!==0) v += parseFloat(m[2])/parseFloat(m[3]);
+  return v;
+}
+function parseMozaik(text){
+  const out=[], errs=[];
+  text.split(/\r?\n/).forEach((line,i)=>{
+    if(!line.trim()) return;
+    let cols = line.includes('\t') ? line.split('\t') : line.split(/\s{2,}/);
+    cols = cols.map(c=>c.trim());
+    if(cols.length < 5){ errs.push(`Line ${i+1}: needs at least Qty, Name, W, H, D`); return; }
+    const qty = parseInt(cols[0])||1;
+    const w=parseDim(cols[2]), h=parseDim(cols[3]), d=parseDim(cols[4]);
+    if(isNaN(w)||isNaN(h)||isNaN(d)){ errs.push(`Line ${i+1}: couldn't read dimensions`); return; }
+    out.push({ qty, name:cols[1]||'Cabinet', w, h, d, desc:cols[5]||'', fin:cols[6]||'', rc:cols[7]||('CAB'+(i+1)) });
+  });
+  return {rows:out, errs};
+}
+function importMozaik(){
+  const {rows, errs} = parseMozaik(el('mozaik-paste').value);
+  let added=0;
+  rows.forEach(r=>{
+    for(let q=0;q<r.qty;q++){
+      cabinets.push({ id:'c'+Date.now()+'_'+Math.random().toString(36).slice(2,6),
+        rc: r.qty>1 ? r.rc+'.'+(q+1) : r.rc,
+        name:r.name, w:r.w, h:r.h, d:r.d, desc:r.desc, fin:r.fin,
+        stackOn: r.h <= 45 }); // bases & uppers can hold weight; talls can't by default
+      added++;
+    }
+  });
+  el('import-msg').innerHTML = `<span class="text-emerald-600 font-bold">Imported ${added} cabinet(s).</span>` +
+    (errs.length? `<div class="text-red-600 mt-1">${errs.join('<br>')}</div>`:'');
+  if(added) el('mozaik-paste').value='';
+  renderCabs(); saveAll();
+}
+/* =================== JobData.db IMPORT =================== */
+const MM_TO_IN = 1/25.4;
+const frac16 = v => Math.round(v*16)/16;              // Mozaik stores mm; snap to 1/16"
+const FIN_ENDS = { 0:'None', 1:'1 End', 2:'2 Ends' };
+
+let sqlJsPromise = null;
+function loadSqlJs(){
+  if(!sqlJsPromise){
+    if(typeof initSqlJs !== 'function') return Promise.reject(new Error('SQLite reader failed to load — check your internet connection.'));
+    sqlJsPromise = initSqlJs({ locateFile: f => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/${f}` });
+  }
+  return sqlJsPromise;
+}
+function dbRows(db, sql){
+  let res; try{ res = db.exec(sql); }catch(e){ return []; }
+  if(!res.length) return [];
+  const {columns, values} = res[0];
+  return values.map(v => Object.fromEntries(columns.map((c,i)=>[c, v[i]])));
+}
+function parseJobDb(db){
+  const job = dbRows(db,'SELECT JobName, Customer FROM JobTable LIMIT 1')[0] || {};
+  const rooms = {};
+  for(const r of dbRows(db,'SELECT ID, [Room.] AS num, roomName FROM RoomTable')) rooms[r.ID] = r;
+  const rows = dbRows(db,'SELECT Room, [Cab.] AS cab, cabName, Type, W, H, D, quan, finEnds FROM CabinetTable');
+  if(!rows.length) throw new Error('No CabinetTable in that file — is it a Mozaik JobData.db?');
+
+  const out=[], skipped=[];
+  for(const r of rows){
+    const room = rooms[r.Room] || { num:r.Room, roomName:'Room '+r.Room };
+    const w = frac16((r.W||0)*MM_TO_IN), h = frac16((r.H||0)*MM_TO_IN), d = frac16((r.D||0)*MM_TO_IN);
+    const name = r.cabName || 'Cabinet';
+    if(w<=0 || h<=0 || d<=0){ skipped.push(`${name} (no size)`); continue; }
+    out.push({ qty: parseInt(r.quan||1,10) || 1,
+               rc: `R${room.num}C${r.cab}`, name, w, h, d,
+               desc: r.roomName || room.roomName || r.Type || '',
+               fin: FIN_ENDS[r.finEnds] !== undefined ? FIN_ENDS[r.finEnds] : (r.finEnds||'') });
+  }
+  if(!out.length) throw new Error('No cabinets with valid dimensions found.');
+  return { jobName: job.JobName || '', customer: job.Customer || '', rows: out, skipped };
+}
+function dbMsg(html, kind){
+  el('db-msg').innerHTML = kind==='error' ? `<span class="text-red-600 font-bold">${html}</span>`
+                         : kind==='busy'  ? `<span class="text-slate-500">${html}</span>`
+                         : `<span class="text-emerald-600 font-bold">${html}</span>`;
+}
+async function importJobDb(file){
+  if(!file) return;
+  dbMsg(`Reading ${file.name}\u2026`, 'busy');
+  try{
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if(new TextDecoder().decode(bytes.slice(0,15)) !== 'SQLite format 3')
+      throw new Error('That file is not a SQLite database. Pick the JobData.db from the Mozaik job folder.');
+
+    const SQL = await loadSqlJs();
+    const db = new SQL.Database(bytes);
+    let parsed; try{ parsed = parseJobDb(db); } finally { db.close(); }
+
+    let added = 0;
+    parsed.rows.forEach(r=>{
+      for(let q=0;q<r.qty;q++){
+        cabinets.push({ id:'c'+Date.now()+'_'+Math.random().toString(36).slice(2,6),
+          rc: r.qty>1 ? r.rc+'.'+(q+1) : r.rc,
+          name:r.name, w:r.w, h:r.h, d:r.d, desc:r.desc, fin:r.fin,
+          stackOn: r.h <= 45 });
+        added++;
+      }
+    });
+    if(parsed.jobName && !el('job-name').value.trim()) el('job-name').value = parsed.jobName;
+
+    dbMsg(`Imported ${added} cabinet(s)${parsed.jobName? ' from &ldquo;'+parsed.jobName+'&rdquo;':''}.`, 'ok');
+    if(parsed.skipped.length)
+      el('db-msg').innerHTML += `<div class="text-amber-600 font-normal mt-1">Skipped ${parsed.skipped.length}: ${parsed.skipped.join(', ')}</div>`;
+    renderCabs(); saveAll();
+  }catch(err){
+    dbMsg(err.message, 'error');
+  }
+}
+function initDbDrop(){
+  const input = el('db-file'), drop = el('db-drop');
+  if(!input || !drop) return;
+  input.addEventListener('change', e=>{ importJobDb(e.target.files[0]); e.target.value=''; });
+  ['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev, e=>{
+    e.preventDefault(); drop.classList.add('bg-emerald-100','border-emerald-600'); }));
+  ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev, e=>{
+    e.preventDefault(); drop.classList.remove('bg-emerald-100','border-emerald-600'); }));
+  drop.addEventListener('drop', e=>importJobDb(e.dataTransfer.files[0]));
+}
+
+function loadSample(){
+  el('mozaik-paste').value = "1\t90° Base Corner\t36\t34 1/2\t36\tBase - Corner 90°\tNone\tR1C3\n1\tCustom Base Cab\t72 1/4\t34 1/2\t24\tCustomized Base Cabinet\tNone\tR1C2\n1\tCustom Base Cab\t53\t34 1/2\t24\tCustomized Base Cabinet\tNone\tR1C1\n2\tWall Cab\t30\t30\t12\tWall Cabinet\tNone\tR1C4\n1\tTall Pantry\t24\t84\t24\tPantry\tLeft\tR1C5";
+}
+function addManual(){
+  const w=parseDim(el('m-w').value), h=parseDim(el('m-h').value), d=parseDim(el('m-d').value);
+  const rc=el('m-rc').value.trim(), qty=parseInt(el('m-qty').value)||1;
+  if(!rc||isNaN(w)||isNaN(h)||isNaN(d)){ alert('Room/Cab # and all three dimensions are required.'); return; }
+  for(let q=0;q<qty;q++){
+    cabinets.push({ id:'c'+Date.now()+'_'+q, rc: qty>1? rc+'.'+(q+1):rc, name:el('m-name').value||'Cabinet',
+      w,h,d, desc:'', fin:'', stackOn: el('m-stack').checked });
+  }
+  ['m-name','m-rc','m-w','m-h','m-d'].forEach(i=>el(i).value=''); el('m-qty').value=1;
+  renderCabs(); saveAll();
+}
+function delCab(id){ cabinets = cabinets.filter(c=>c.id!==id); renderCabs(); saveAll(); }
+function clearCabs(){ if(confirm('Remove all cabinets?')){ cabinets=[]; results=null; renderCabs(); saveAll(); } }
+function toggleStack(id){ const c=cabinets.find(c=>c.id===id); if(c){ c.stackOn=!c.stackOn; saveAll(); } }
+function fmtDim(v){ // 34.5 -> 34 1/2
+  const whole=Math.floor(v), fr=v-whole;
+  if(fr<0.01) return ''+whole;
+  const sixteenths = Math.round(fr*16); if(sixteenths===0) return ''+whole; if(sixteenths===16) return ''+(whole+1);
+  let n=sixteenths, dd=16; while(n%2===0){n/=2;dd/=2;}
+  return (whole? whole+' ':'')+n+'/'+dd;
+}
+function roomOf(rc){ const m=(''+rc).match(/^R?(\w+?)C/i); return m? m[1] : rc; }
+function roomColor(rc){
+  const r=roomOf(rc); let hsh=0; for(const ch of (''+r)) hsh=(hsh*31+ch.charCodeAt(0))>>>0;
+  return ROOM_COLORS[hsh % ROOM_COLORS.length];
+}
+function poseText(p){ return p.pose==='back' ? 'laid on back' : p.pose==='side' ? 'on side' : 'standing upright'; }
+/* A cabinet that realistically needs two or more people to carry — flagged so it
+   gets loaded early while there is room to maneuver. */
+function isBulky(c){
+  return Math.max(c.w,c.h,c.d) >= 40 || (c.w>=30 && c.h>=30 && c.d>=20) || (c.w*c.h*c.d) >= 30000;
+}
+function renderCabs(){
+  el('cab-count').textContent = cabinets.length+' cabinets';
+  el('cab-tbody').innerHTML = cabinets.map(c=>`
+    <tr>
+      <td><span class="inline-block w-2.5 h-2.5 rounded-sm mr-1" style="background:${roomColor(c.rc)}"></span><b>${c.rc}</b></td>
+      <td>${c.name}</td><td>${fmtDim(c.w)}</td><td>${fmtDim(c.h)}</td><td>${fmtDim(c.d)}</td>
+      <td class="text-slate-500">${c.desc||''}</td><td>${c.fin||''}</td>
+      <td class="text-center"><input type="checkbox" ${c.stackOn?'checked':''} onchange="toggleStack('${c.id}')"></td>
+      <td><button class="text-red-500 hover:text-red-700 font-bold" onclick="delCab('${c.id}')">✕</button></td>
+    </tr>`).join('');
+}
+
+/* =================== TRAILER PROFILES =================== */
+function renderTrailers(){
+  el('trailer-list').innerHTML = trailers.map(t=>{
+    const g = geomOf(t);
+    const act = t.id===activeTrailerId;
+    return `<div class="border rounded-lg p-2.5 ${act?'border-blue-600 bg-blue-50':'border-slate-200'}">
+      <div class="flex justify-between items-start">
+        <div>
+          <div class="font-bold text-sm">${t.name} ${act?'<span class="text-[10px] bg-blue-600 text-white rounded px-1.5 py-0.5 ml-1">ACTIVE</span>':''}</div>
+          <div class="text-xs text-slate-500">${t.w}"W × ${t.h}"H × ${Math.round(g.totalL)}"L total
+            ${t.type==='gooseneck'?' · gooseneck':''}${t.vnose?' · V-nose':''}${t.ww?' · wheel wells':''}</div>
+        </div>
+      </div>
+      <div class="flex gap-1.5 mt-2">
+        ${act?'':`<button class="btn btn-green !py-0.5 !px-2 text-xs" onclick="setActive('${t.id}')">Use</button>`}
+        <button class="btn btn-gray !py-0.5 !px-2 text-xs" onclick="editTrailer('${t.id}')">Edit</button>
+        <button class="btn btn-red !py-0.5 !px-2 text-xs" onclick="delTrailer('${t.id}')">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+function setActive(id){ activeTrailerId=id; results=null; renderTrailers(); saveAll(); }
+function delTrailer(id){
+  if(trailers.length===1){ alert('Keep at least one trailer profile.'); return; }
+  if(!confirm('Delete this trailer profile?')) return;
+  trailers = trailers.filter(t=>t.id!==id);
+  if(activeTrailerId===id) activeTrailerId=trailers[0].id;
+  renderTrailers(); saveAll();
+}
+function editTrailer(id){
+  editingTrailerId = id;
+  const t = id? trailers.find(t=>t.id===id) : null;
+  el('tf-title').textContent = t? 'Edit: '+t.name : 'New Trailer';
+  el('t-name').value = t? t.name:''; el('t-type').value = t? t.type:'standard';
+  el('t-w').value=t?t.w:96; el('t-h').value=t?t.h:96; el('t-l').value=t?t.len:240;
+  el('t-vnose').checked=t?!!t.vnose:false;
+  el('t-vstart').value=t?(t.vstart||''):''; el('t-vtip').value=t?(t.vtip||''):'';
+  el('t-gnl').value=t?(t.gnl||60):60; el('t-gnh').value=t?(t.gnh||48):48; el('t-gnvd').value=t?(t.gnvd||36):36;
+  el('t-ww').checked=t?!!t.ww:false;
+  el('t-wwd').value=t?(t.wwd||8):8; el('t-wwh').value=t?(t.wwh||12):12; el('t-wwl').value=t?(t.wwl||60):60;
+  el('t-wwr').value=t?(t.wwr||60):60; el('t-wwf').value=t&&t.wwf!=null?t.wwf:'';
+  el('t-rw').value=t&&t.rw!=null?t.rw:''; el('t-rh').value=t&&t.rh!=null?t.rh:''; el('t-rd').value=t?(t.rd!=null?t.rd:3):3;
+  tfRefresh();
+}
+function tfRefresh(){
+  const type = el('t-type').value, v = el('t-vnose').checked, ww = el('t-ww').checked;
+  el('tf-gn').classList.toggle('hidden', type!=='gooseneck');
+  el('tf-v-std').classList.toggle('hidden', !(v && type==='standard'));
+  el('tf-v-gn').classList.toggle('hidden', !(v && type==='gooseneck'));
+  el('tf-ww-fields').classList.toggle('hidden', !ww);
+  el('t-len-lbl').textContent = type==='gooseneck' ? 'Main floor length" (rear of trailer → start of gooseneck)' : 'Interior Length" (rear doors → front wall)';
+  const H=parseFloat(el('t-h').value)||0, gnh=parseFloat(el('t-gnh').value)||0;
+  el('gn-rise-info').innerHTML = `Deck rise above main floor: <b>${Math.max(0,H-gnh)}"</b><br><span class="text-[10px] text-slate-500">= overall height − gooseneck area height</span>`;
+  // wheel well cross-check
+  const wwEl = el('ww-check');
+  const wwf = parseFloat(el('t-wwf').value);
+  if(ww && !isNaN(wwf)){
+    const mainLen = parseFloat(el('t-l').value)||0, wwr=parseFloat(el('t-wwr').value)||0, wwl=parseFloat(el('t-wwl').value)||0;
+    const expected = mainLen - wwr - wwl; // front of main floor to front of well
+    const diff = Math.abs(expected - wwf);
+    wwEl.className = 'text-xs rounded p-2 w-full ' + (diff<=1 ? 'bg-emerald-50 border border-emerald-200 text-emerald-700':'bg-red-50 border border-red-200 text-red-700');
+    wwEl.innerHTML = diff<=1 ? '✓ Measurements check out' : `⚠ Check specs: rear dist + well length + front dist = ${(wwr+wwl+wwf).toFixed(1)}" but main floor is ${mainLen}"`;
+  } else { wwEl.className='text-xs'; wwEl.innerHTML=''; }
+}
+function saveTrailer(){
+  const t = {
+    id: editingTrailerId || ('t'+Date.now()),
+    name: el('t-name').value.trim() || 'Trailer',
+    type: el('t-type').value,
+    w:+el('t-w').value||96, h:+el('t-h').value||96, len:+el('t-l').value||240,
+    vnose: el('t-vnose').checked,
+    vstart:+el('t-vstart').value||0, vtip:+el('t-vtip').value||0,
+    gnl:+el('t-gnl').value||0, gnh:+el('t-gnh').value||0, gnvd:+el('t-gnvd').value||0,
+    ww: el('t-ww').checked,
+    wwd:+el('t-wwd').value||0, wwh:+el('t-wwh').value||0, wwl:+el('t-wwl').value||0,
+    wwr:+el('t-wwr').value||0, wwf: el('t-wwf').value===''? null : +el('t-wwf').value,
+    rw: el('t-rw').value===''? null : +el('t-rw').value,
+    rh: el('t-rh').value===''? null : +el('t-rh').value,
+    rd: +el('t-rd').value||0
+  };
+  if(t.type==='standard' && t.vnose && t.vtip<=t.vstart){ alert('V-nose: "rear → front of V" must be greater than "rear → start of V".'); return; }
+  if(t.type==='gooseneck' && t.h - t.gnh <= 0){ alert('Gooseneck area height must be less than overall interior height.'); return; }
+  const idx = trailers.findIndex(x=>x.id===t.id);
+  if(idx>=0) trailers[idx]=t; else { trailers.push(t); activeTrailerId=t.id; }
+  editingTrailerId=null; results=null;
+  renderTrailers(); saveAll(); editTrailer(null);
+  alert('Trailer saved.');
+}
+
+/* =================== TRAILER GEOMETRY =================== */
+/* Internal coords: z=0 at NOSE (front tip), z increases toward rear doors.
+   x=0 left wall (standing at rear doors looking forward), y=0 main floor. */
+function geomOf(t){
+  const g = { W:t.w, H:t.h, wells:[], gn:null, taper:null };
+  if(t.type==='gooseneck'){
+    const rise = t.h - t.gnh;
+    g.totalL = t.len + t.gnl;
+    g.gn = { len:t.gnl, rise, headroom:t.gnh }; // gooseneck occupies z in [0, gnl]
+    if(t.vnose && t.gnvd < t.gnl){
+      g.taper = { end: t.gnl - t.gnvd }; // full width at z>=end, tapers to point at z=0
+    }
+  } else {
+    g.totalL = (t.vnose && t.vtip>0) ? t.vtip : t.len;
+    if(t.vnose && t.vstart < g.totalL){
+      g.taper = { end: g.totalL - t.vstart };
+    }
+  }
+  if(t.ww){
+    const z2 = g.totalL - t.wwr, z1 = z2 - t.wwl;
+    g.wells.push({x:0, y:0, z:z1, w:t.wwd, h:t.wwh, d:t.wwl});
+    g.wells.push({x:t.w-t.wwd, y:0, z:z1, w:t.wwd, h:t.wwh, d:t.wwl});
+  }
+  // Rear door opening: the frame has a lip that is narrower/shorter than the
+  // interior, so the usable cross-section shrinks over the last `rd` inches near
+  // the doors. Modelled as solid ledge obstacles (sides + top) — not supports.
+  g.ledges = [];
+  const rw = (t.rw && t.rw>0) ? t.rw : t.w;      // rear opening width
+  const rh = (t.rh && t.rh>0) ? t.rh : t.h;      // rear opening height
+  const rd = (t.rd && t.rd>0) ? t.rd : 0;        // how far forward the lip reaches
+  const si = Math.max(0, (t.w - rw)/2);          // inset on each side
+  const ti = Math.max(0, (t.h - rh));            // inset at the top
+  if(rd>0 && (si>0.01 || ti>0.01)){
+    const z0 = g.totalL - rd;
+    if(si>0.01){
+      g.ledges.push({x:0,       y:0, z:z0, w:si, h:t.h, d:rd});
+      g.ledges.push({x:t.w-si,  y:0, z:z0, w:si, h:t.h, d:rd});
+    }
+    if(ti>0.01) g.ledges.push({x:0, y:t.h-ti, z:z0, w:t.w, h:ti, d:rd});
+    g.rear = { w:rw, h:rh, depth:rd, si, ti, z0 };
+  }
+  return g;
+}
+function availWidthAt(g, z){
+  if(!g.taper) return {min:0, max:g.W};
+  if(z >= g.taper.end) return {min:0, max:g.W};
+  const aw = Math.max(0, g.W * (z / g.taper.end));
+  return { min:(g.W-aw)/2, max:(g.W+aw)/2 };
+}
+function floorYAt(g, z){ return (g.gn && z < g.gn.len - 0.01) ? g.gn.rise : 0; }
+
+/* =================== PACKING =================== */
+function boxesOverlapXZ(a,b,gap){
+  return a.x < b.x+b.w+gap && b.x < a.x+a.w+gap &&
+         a.z < b.z+b.d+gap && b.z < a.z+a.d+gap;
+}
+function boxesOverlapY(a,b){ return a.y < b.y+b.h-0.01 && b.y < a.y+a.h-0.01; }
+
+/* A placed cabinet can carry a layer above it if it is lying flat (on its back
+   or side, so a plywood sheet spans its top like a floor) OR it is explicitly
+   flagged stack-on. Upright cabinets only carry weight when flagged stack-on. */
+function isSupport(p){ return !!p && (p.pose==='back' || p.pose==='side' || (p.cab && p.cab.stackOn)); }
+
+/* Loading poses, listed in preference order.
+     back    = cabinet lying on its back, face up  -> DEPTH is vertical  (preferred)
+     side    = cabinet resting on an end panel      -> WIDTH is vertical
+     upright = cabinet standing as in the kitchen   -> HEIGHT is vertical (last resort) */
+function flatPoses(cab, allowSide){
+  const P=[];
+  P.push({ w:cab.w, h:cab.d, d:cab.h, pose:'back', rot:false });        // on its back
+  if(cab.w!==cab.h) P.push({ w:cab.h, h:cab.d, d:cab.w, pose:'back', rot:true });
+  if(allowSide){
+    P.push({ w:cab.h, h:cab.w, d:cab.d, pose:'side', rot:false });      // on its side
+    if(cab.h!==cab.d) P.push({ w:cab.d, h:cab.w, d:cab.h, pose:'side', rot:true });
+  }
+  return P;
+}
+function uprightPoses(cab){
+  const P=[{ w:cab.w, h:cab.h, d:cab.d, pose:'upright', rot:false }];
+  if(cab.w!==cab.d) P.push({ w:cab.d, h:cab.h, d:cab.w, pose:'upright', rot:true });
+  return P;
+}
+
+/* Most common depth among the "big" cabinets (bases & talls, depth >= 18").
+   Laid on their backs these all rise to this same height, forming the flat
+   bottom deck that plywood is laid over. */
+function dominantDepth(cabs){
+  const pool = cabs.filter(c=> c.d >= 18);
+  const src = pool.length ? pool : cabs;
+  const bins = {};
+  for(const c of src){ const k=Math.round(c.d); bins[k]=(bins[k]||0)+1; }
+  let best=24, bestN=-1;
+  for(const k in bins){ if(bins[k]>bestN){ bestN=bins[k]; best=+k; } }
+  return best;
+}
+
+function canPlace(g, placed, gap, x,y,z,w,h,d, ply){
+  const eps=0.01;
+  if(x<-eps || z<-eps) return false;
+  if(y+h > g.H+eps) return false;
+  if(z+d > g.totalL+eps) return false;
+  // gooseneck region rules
+  if(g.gn){
+    const inGN = z < g.gn.len-eps, crossGN = inGN && (z+d > g.gn.len+eps);
+    if(crossGN) return false;                       // can't span the deck step
+    if(inGN && y < g.gn.rise-eps) return false;     // must sit at/above deck level
+  }
+  // V taper: narrowest at front-most z of the box
+  const wr = availWidthAt(g, z);
+  if(x < wr.min-eps || x+w > wr.max+eps) return false;
+  const box={x,y,z,w,h,d};
+  // wheel wells are solid obstacles
+  for(const wl of g.wells){
+    if(boxesOverlapXZ(box,wl,0) && boxesOverlapY(box,wl)) return false;
+  }
+  // rear door-frame ledge is a solid obstacle (narrower/shorter opening at the back)
+  if(g.ledges) for(const ob of g.ledges){
+    if(boxesOverlapXZ(box,ob,0) && boxesOverlapY(box,ob)) return false;
+  }
+  // collision with placed cabinets (horizontal clearance gap)
+  for(const p of placed){
+    if(boxesOverlapY(box,p) && boxesOverlapXZ(box,p,gap)) return false;
+  }
+  // support check
+  const fy = floorYAt(g,z);
+  if(Math.abs(y-fy) < 0.5) return true; // on the floor / gooseneck deck
+  // else it must rest on a plywood-covered deck of flat cabinets (or wheel wells)
+  // covering >= 60% of its footprint. Plywood raises the support surface by `ply`.
+  let support=0; const area=w*d;
+  for(const p of placed){
+    if(!isSupport(p)) continue;
+    if(Math.abs(p.y+p.h + ply - y) < 0.6){
+      const ox=Math.max(0, Math.min(x+w,p.x+p.w)-Math.max(x,p.x));
+      const oz=Math.max(0, Math.min(z+d,p.z+p.d)-Math.max(z,p.z));
+      support += ox*oz;
+    }
+  }
+  for(const wl of g.wells){
+    if(Math.abs(wl.y+wl.h - y) < 0.6){
+      const ox=Math.max(0, Math.min(x+w,wl.x+wl.w)-Math.max(x,wl.x));
+      const oz=Math.max(0, Math.min(z+d,wl.z+wl.d)-Math.max(z,wl.z));
+      support += ox*oz;
+    }
+  }
+  return support >= area*0.6;
+}
+
+/* Try to place one cabinet given an ordered list of poses.
+   Scans front->rear, low->high, left->right; returns true when placed. */
+function tryPlace(cab, poses, g, placed, gap, ply, allowStack, standMargin){
+  const STEP = 1.5;
+  for(let z=0; z<=g.totalL+0.01; z+=STEP){
+    const yset=[floorYAt(g,z)];
+    if(allowStack){
+      for(const p of placed){ if(isSupport(p) && p.z < z+120 && p.z+p.d > z-120) yset.push(p.y+p.h+ply); }
+      for(const wl of g.wells){ if(wl.z < z+120 && wl.z+wl.d > z-120) yset.push(wl.h); }
+    }
+    const ys=[...new Set(yset.map(v=>Math.round(v*100)/100))].sort((a,b)=>a-b);
+    for(const y of ys){
+      for(const o of poses){
+        // To stand a cabinet upright you must tip it up from lying flat, and the
+        // far corner sweeps the DIAGONAL of its height×depth face — not just its
+        // height. A 90"-tall × 25"-deep box needs ~sqrt(90²+25²)=93.4" of headroom
+        // to rotate up, so it can't be stood in 91–92". Require that diagonal
+        // (plus a safety margin) to fit between this level and the ceiling.
+        if(o.pose==='upright'){
+          const diag = Math.hypot(cab.h, cab.d);
+          if(g.H - y < diag + standMargin) continue;
+        }
+        if(z+o.d > g.totalL+0.01) continue;
+        const wr = availWidthAt(g,z);
+        for(let x=Math.max(0,wr.min); x<=g.W-o.w+0.01; x+=STEP){
+          if(canPlace(g, placed, gap, x,y,z,o.w,o.h,o.d, ply)){
+            placed.push({ x,y,z, w:o.w, h:o.h, d:o.d, rot:o.rot, pose:o.pose, cab });
+            return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function optimize(){
+  const t = trailers.find(t=>t.id===activeTrailerId);
+  if(!t){ alert('Select a trailer first (Trailers tab).'); return; }
+  if(cabinets.length===0){ alert('Add cabinets first (Cabinets tab).'); return; }
+  const g = geomOf(t);
+  const gap = Math.max(0.25, parseFloat(el('gap').value)||1);
+  const allowStack = el('allow-stack').checked;
+  const layFlat   = el('lay-flat')   ? el('lay-flat').checked : true;
+  const allowSide = el('allow-side') ? el('allow-side').checked : false;
+  const ply = allowStack ? Math.max(0, parseFloat(el('plywood') && el('plywood').value)||0) : 0;
+  const standMargin = parseFloat(el('stand-clear') && el('stand-clear').value);
+  const SC = isNaN(standMargin) ? 3 : Math.max(0, standMargin);
+
+  const placed=[], failed=[];
+
+  if(layFlat){
+    /* ---- Phase 1: build the flat bottom deck ----
+       Lay every dominant-depth cabinet on its back on the floor so their tops
+       line up into one flat surface. Plywood is then laid over this deck. */
+    const deckH = dominantDepth(cabinets);
+    const deckCabs = cabinets.filter(c=> Math.abs(c.d-deckH) < 1.01)
+                             .sort((a,b)=> (b.w*b.h*b.d - a.w*a.h*a.d) || (b.w*b.h - a.w*a.h)); // heaviest first -> loaded first, toward the front
+    const rest = cabinets.filter(c=> !(Math.abs(c.d-deckH) < 1.01));
+
+    for(const cab of deckCabs){                         // floor only, no stacking within the deck
+      if(!tryPlace(cab, flatPoses(cab, allowSide), g, placed, gap, ply, false, SC)) rest.push(cab);
+    }
+
+    /* ---- Phase 2: everything else ----
+       Prefer lying flat; stack onto the plywood deck; stand upright only when
+       nothing lies flat and there is headroom to tip it up. */
+    rest.sort((a,b)=> (b.d-a.d) || (b.w*b.h*b.d - a.w*a.h*a.d)); // deepest / biggest first
+    for(const cab of rest){
+      let done = tryPlace(cab, flatPoses(cab, allowSide), g, placed, gap, ply, allowStack, SC);
+      if(!done) done = tryPlace(cab, uprightPoses(cab), g, placed, gap, ply, allowStack, SC);
+      if(!done) failed.push(cab);
+    }
+  } else {
+    /* Lay-flat disabled: single pass, still trying flat before upright. */
+    const units=[...cabinets].sort((a,b)=> (b.h-a.h) || (b.w*b.h*b.d - a.w*a.h*a.d));
+    for(const cab of units){
+      let done = tryPlace(cab, flatPoses(cab, allowSide), g, placed, gap, ply, allowStack, SC);
+      if(!done) done = tryPlace(cab, uprightPoses(cab), g, placed, gap, ply, allowStack, SC);
+      if(!done) failed.push(cab);
+    }
+  }
+
+  // loading sequence: bottom deck first, then (after plywood) the stacked layer;
+  // within each layer, front of trailer first, then left. Heavy pieces sit toward
+  // the front, so they get the lowest numbers and go in while there's most room.
+  placed.sort((a,b)=>{
+    const la = Math.abs(a.y-floorYAt(g,a.z))<0.5 ? 0 : 1;
+    const lb = Math.abs(b.y-floorYAt(g,b.z))<0.5 ? 0 : 1;
+    return (la-lb) || (a.z-b.z) || (a.y-b.y) || (a.x-b.x);
+  });
+  placed.forEach((p,i)=>p.seq=i+1);
+  results = { trailer:t, geom:g, placed, failed, gap, ply };
+  saveAll();
+  updateStats();
+  document.querySelector('[data-tab="tab-3d"]').click();
+  draw3D();
+}
+
+/* =================== STATS / SEQUENCE =================== */
+function updateStats(){
+  if(!results) return;
+  const {geom:g, placed, failed, trailer:t} = results;
+  el('s-trailer').textContent = t.name;
+  el('s-loaded').textContent = placed.length;
+  el('s-failed').textContent = failed.length;
+  const vol = placed.reduce((a,p)=>a+p.w*p.h*p.d,0);
+  const tvol = g.W*g.H*g.totalL;
+  el('s-vol').textContent = Math.round(vol/tvol*100)+'%';
+  const farea = placed.filter(p=>Math.abs(p.y-floorYAt(g,p.z))<0.5).reduce((a,p)=>a+p.w*p.d,0);
+  el('s-floor').textContent = Math.round(farea/(g.W*g.totalL)*100)+'%';
+  el('s-faillist').innerHTML = failed.map(c=>`✗ ${c.rc} — ${c.name} (${fmtDim(c.w)}×${fmtDim(c.h)}×${fmtDim(c.d)})`).join('<br>');
+  el('seq-list').innerHTML = placed.map(p=>{
+    const fromRear = g.totalL-(p.z+p.d);
+    const onFloor = Math.abs(p.y-floorYAt(g,p.z))<0.5;
+    return `<div class="border rounded p-1.5 flex items-center gap-2" style="border-left:4px solid ${roomColor(p.cab.rc)}">
+      <b class="text-slate-400">#${p.seq}</b>
+      <div><b>${p.cab.rc}</b> ${p.cab.name}${isBulky(p.cab)?' <span class="text-[9px] font-bold text-white bg-orange-500 rounded px-1">2+ ppl</span>':''}<br>
+      <span class="text-slate-500">${fmtDim(p.cab.w)}×${fmtDim(p.cab.h)}×${fmtDim(p.cab.d)} · ${fromRear.toFixed(0)}" from rear · ${p.x.toFixed(0)}" from left${onFloor?'':' · stacked at '+p.y.toFixed(0)+'"'} · <b class="text-slate-600">${poseText(p)}</b>${p.rot?', turned 90°':''}</span></div>
+    </div>`;
+  }).join('');
+}
+
+/* =================== 3D VIEW =================== */
+let scene, camera, renderer, controls, loadGroup, threeReady=false;
+function init3D(){
+  if(threeReady) return;
+  const c = el('canvas3d');
+  scene = new THREE.Scene(); scene.background = new THREE.Color(0x1e293b);
+  camera = new THREE.PerspectiveCamera(50, c.clientWidth/Math.max(1,c.clientHeight), 1, 8000);
+  camera.position.set(-220, 190, 320);
+  renderer = new THREE.WebGLRenderer({antialias:true});
+  renderer.setSize(c.clientWidth, c.clientHeight);
+  c.appendChild(renderer.domElement);
+  controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  scene.add(new THREE.AmbientLight(0xffffff, .65));
+  const dl = new THREE.DirectionalLight(0xffffff, .8); dl.position.set(150,300,150); scene.add(dl);
+  window.addEventListener('resize', resize3D);
+  threeReady=true;
+  (function anim(){ requestAnimationFrame(anim); controls.update(); renderer.render(scene,camera); })();
+  draw3D();
+}
+function resize3D(){
+  if(!threeReady) return;
+  const c = el('canvas3d');
+  renderer.setSize(c.clientWidth, c.clientHeight);
+  camera.aspect = c.clientWidth/Math.max(1,c.clientHeight);
+  camera.updateProjectionMatrix();
+}
+function makeLabel(text, color){
+  const cv=document.createElement('canvas'); cv.width=256; cv.height=96;
+  const ctx=cv.getContext('2d');
+  ctx.fillStyle='rgba(255,255,255,0.92)'; ctx.fillRect(0,0,256,96);
+  ctx.strokeStyle=color; ctx.lineWidth=8; ctx.strokeRect(0,0,256,96);
+  ctx.fillStyle='#0f172a'; ctx.font='bold 52px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(text,128,48);
+  const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(cv), depthTest:false}));
+  sp.scale.set(26,10,1);
+  return sp;
+}
+function draw3D(){
+  if(!threeReady) return;
+  if(loadGroup) scene.remove(loadGroup);
+  loadGroup = new THREE.Group();
+  const t = trailers.find(x=>x.id===activeTrailerId); if(!t){ scene.add(loadGroup); return; }
+  const g = results? results.geom : geomOf(t);
+  const ox=-g.W/2, oz=-g.totalL/2; // center trailer
+  const map = (x,y,z)=>[x+ox, y, z+oz];
+
+  // floor outline polygon (top view): walk from rear-left forward, around nose, back on right
+  const pts=[]; // [x,z]
+  const zTaperEnd = g.taper? g.taper.end : 0;
+  pts.push([0, g.totalL]);
+  if(g.taper){ pts.push([0, zTaperEnd]); pts.push([g.W/2, 0]); pts.push([g.W, zTaperEnd]); }
+  else { pts.push([0,0]); pts.push([g.W,0]); }
+  pts.push([g.W, g.totalL]);
+  // floor lines
+  const matLine = new THREE.LineBasicMaterial({color:0x94a3b8});
+  const floorGeoPts=[];
+  for(let i=0;i<pts.length;i++){ const a=pts[i], b=pts[(i+1)%pts.length];
+    floorGeoPts.push(new THREE.Vector3(...map(a[0],0,a[1])), new THREE.Vector3(...map(b[0],0,b[1]))); }
+  // vertical edges + ceiling
+  for(const p of pts){ floorGeoPts.push(new THREE.Vector3(...map(p[0],0,p[1])), new THREE.Vector3(...map(p[0],g.H,p[1]))); }
+  for(let i=0;i<pts.length;i++){ const a=pts[i], b=pts[(i+1)%pts.length];
+    floorGeoPts.push(new THREE.Vector3(...map(a[0],g.H,a[1])), new THREE.Vector3(...map(b[0],g.H,b[1]))); }
+  loadGroup.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(floorGeoPts), matLine));
+  // floor plane (main)
+  const zMainStart = g.gn? g.gn.len : (g.taper? g.taper.end : 0);
+  const mainFloor = new THREE.Mesh(new THREE.PlaneGeometry(g.W, g.totalL - zMainStart),
+    new THREE.MeshStandardMaterial({color:0x334155, side:THREE.DoubleSide}));
+  mainFloor.rotation.x=-Math.PI/2;
+  mainFloor.position.set(0, 0.05, (zMainStart + g.totalL)/2 + oz);
+  loadGroup.add(mainFloor);
+  // gooseneck deck
+  if(g.gn){
+    const deck = new THREE.Mesh(new THREE.BoxGeometry(g.W, g.gn.rise, g.gn.len),
+      new THREE.MeshStandardMaterial({color:0x475569, transparent:true, opacity:.85}));
+    deck.position.set(0, g.gn.rise/2, g.gn.len/2 + oz);
+    loadGroup.add(deck);
+  }
+  // wheel wells
+  for(const wl of g.wells){
+    const m = new THREE.Mesh(new THREE.BoxGeometry(wl.w, wl.h, wl.d),
+      new THREE.MeshStandardMaterial({color:0x0f172a}));
+    m.position.set(wl.x+wl.w/2+ox, wl.y+wl.h/2, wl.z+wl.d/2+oz);
+    loadGroup.add(m);
+  }
+  // rear door-frame ledge
+  if(g.ledges) for(const ob of g.ledges){
+    const m = new THREE.Mesh(new THREE.BoxGeometry(ob.w, ob.h, ob.d),
+      new THREE.MeshStandardMaterial({color:0x64748b, transparent:true, opacity:.6}));
+    m.position.set(ob.x+ob.w/2+ox, ob.y+ob.h/2, ob.z+ob.d/2+oz);
+    loadGroup.add(m);
+  }
+  // rear door marker
+  const rearPts=[new THREE.Vector3(...map(0,0,g.totalL)), new THREE.Vector3(...map(g.W,0,g.totalL)),
+                 new THREE.Vector3(...map(g.W,g.H,g.totalL)), new THREE.Vector3(...map(0,g.H,g.totalL)), new THREE.Vector3(...map(0,0,g.totalL))];
+  loadGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(rearPts), new THREE.LineBasicMaterial({color:0xef4444, linewidth:2})));
+
+  // cabinets
+  if(results){
+    for(const p of results.placed){
+      const col = new THREE.Color(roomColor(p.cab.rc));
+      const geo = new THREE.BoxGeometry(Math.max(0.5,p.w-0.4), Math.max(0.5,p.h-0.4), Math.max(0.5,p.d-0.4));
+      const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({color:col, transparent:true, opacity:.92}));
+      mesh.position.set(p.x+p.w/2+ox, p.y+p.h/2, p.z+p.d/2+oz);
+      mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({color:0x0f172a})));
+      const lbl = makeLabel(p.cab.rc, '#'+col.getHexString());
+      lbl.position.set(0, p.h/2+6, 0);
+      mesh.add(lbl);
+      loadGroup.add(mesh);
+    }
+  }
+  scene.add(loadGroup);
+}
+
+/* =================== SVG PLANS =================== */
+function svgFloorOutline(g, sc, pad){
+  // nose at LEFT. sx(z)=pad+z*sc ; sy(x)=pad+x*sc
+  const sx=z=>pad+z*sc, sy=x=>pad+x*sc;
+  let d='';
+  const zt = g.taper? g.taper.end : 0;
+  if(g.taper){
+    d = `M ${sx(g.totalL)} ${sy(0)} L ${sx(zt)} ${sy(0)} L ${sx(0)} ${sy(g.W/2)} L ${sx(zt)} ${sy(g.W)} L ${sx(g.totalL)} ${sy(g.W)} Z`;
+  } else {
+    d = `M ${sx(g.totalL)} ${sy(0)} L ${sx(0)} ${sy(0)} L ${sx(0)} ${sy(g.W)} L ${sx(g.totalL)} ${sy(g.W)} Z`;
+  }
+  let extra='';
+  if(g.gn) extra += `<line x1="${sx(g.gn.len)}" y1="${sy(0)}" x2="${sx(g.gn.len)}" y2="${sy(g.W)}" stroke="#b45309" stroke-width="1.5" stroke-dasharray="6 3"/>
+    <text x="${sx(g.gn.len/2)}" y="${sy(g.W)+12}" font-size="9" fill="#b45309" text-anchor="middle">GOOSENECK DECK (raised ${fmtDim(g.gn.rise)}")</text>`;
+  for(const wl of g.wells){
+    extra += `<rect x="${sx(wl.z)}" y="${sy(wl.x)}" width="${wl.d*sc}" height="${wl.w*sc}" fill="#e2e8f0" stroke="#64748b" stroke-dasharray="3 2"/>
+      <text x="${sx(wl.z+wl.d/2)}" y="${sy(wl.x+wl.w/2)+3}" font-size="7" fill="#64748b" text-anchor="middle">WHEEL WELL</text>`;
+  }
+  if(g.rear && g.rear.si>0.01){
+    extra += `<rect x="${sx(g.rear.z0)}" y="${sy(0)}" width="${g.rear.depth*sc}" height="${g.rear.si*sc}" fill="#94a3b8" fill-opacity="0.5" stroke="#475569" stroke-dasharray="2 2"/>`;
+    extra += `<rect x="${sx(g.rear.z0)}" y="${sy(g.W-g.rear.si)}" width="${g.rear.depth*sc}" height="${g.rear.si*sc}" fill="#94a3b8" fill-opacity="0.5" stroke="#475569" stroke-dasharray="2 2"/>`;
+    extra += `<text x="${sx(g.rear.z0)}" y="${sy(g.W/2)}" font-size="7" fill="#475569" text-anchor="middle" transform="rotate(90 ${sx(g.rear.z0)} ${sy(g.W/2)})">DOOR ${fmtDim(g.rear.w)}" wide</text>`;
+  }
+  return `<path d="${d}" fill="#f8fafc" stroke="#0f172a" stroke-width="2"/>` + extra +
+    `<text x="${sx(g.totalL)+4}" y="${sy(g.W/2)}" font-size="10" fill="#dc2626" transform="rotate(90 ${sx(g.totalL)+4} ${sy(g.W/2)})" text-anchor="middle">REAR DOORS</text>` +
+    `<text x="${sx(0)-4}" y="${sy(g.W/2)}" font-size="10" fill="#0f172a" transform="rotate(-90 ${sx(0)-4} ${sy(g.W/2)})" text-anchor="middle">FRONT</text>`;
+}
+function svgFloorplan(level){ // level: 'floor' | 'stacked'
+  const {geom:g, placed} = results;
+  const maxW = 720, sc = Math.min(maxW/(g.totalL+40), 300/(g.W+40));
+  const pad=30, W=g.totalL*sc+pad*2+20, H=g.W*sc+pad*2+10;
+  const items = placed.filter(p=> level==='floor' ? Math.abs(p.y-floorYAt(g,p.z))<0.5 : Math.abs(p.y-floorYAt(g,p.z))>=0.5);
+  const sx=z=>pad+z*sc, sy=x=>pad+x*sc;
+  let s = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:${W}px">`;
+  s += svgFloorOutline(g, sc, pad);
+  for(const p of items){
+    const c=roomColor(p.cab.rc);
+    s += `<rect x="${sx(p.z)}" y="${sy(p.x)}" width="${p.d*sc}" height="${p.w*sc}" fill="${c}" fill-opacity="0.55" stroke="${c}" stroke-width="1.5"/>`;
+    const fs = Math.max(6.5, Math.min(11, p.d*sc/4, p.w*sc/3));
+    s += `<text x="${sx(p.z+p.d/2)}" y="${sy(p.x+p.w/2)}" font-size="${fs}" font-weight="bold" fill="#0f172a" text-anchor="middle" dominant-baseline="middle">${p.cab.rc}</text>`;
+    s += `<text x="${sx(p.z+p.d/2)}" y="${sy(p.x+p.w/2)+fs}" font-size="${fs*0.7}" fill="#334155" text-anchor="middle" dominant-baseline="middle">#${p.seq}</text>`;
+  }
+  // ruler along bottom (distance from rear)
+  for(let ft=0; ft*12<=g.totalL; ft++){
+    const z=g.totalL-ft*12;
+    s += `<line x1="${sx(z)}" y1="${sy(g.W)+2}" x2="${sx(z)}" y2="${sy(g.W)+7}" stroke="#94a3b8"/><text x="${sx(z)}" y="${sy(g.W)+17}" font-size="7" fill="#94a3b8" text-anchor="middle">${ft}'</text>`;
+  }
+  s+='</svg>';
+  return s;
+}
+function svgElevation(side){ // 'left' | 'right' : cabinets whose center is on that half
+  const {geom:g, placed} = results;
+  const maxW=720, sc=Math.min(maxW/(g.totalL+40), 260/(g.H+40));
+  const pad=30, W=g.totalL*sc+pad*2+20, H=g.H*sc+pad*2+10;
+  const sx=z=>pad+z*sc, sy=y=>pad+(g.H-y)*sc;
+  const items = placed.filter(p=> side==='left' ? (p.x+p.w/2)<=g.W/2 : (p.x+p.w/2)>g.W/2 )
+                      .sort((a,b)=> side==='left' ? (b.x-a.x) : (a.x-b.x)); // far side drawn first
+  let s = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:${W}px">`;
+  // outline with gooseneck step
+  let d;
+  if(g.gn){
+    d=`M ${sx(g.totalL)} ${sy(0)} L ${sx(g.gn.len)} ${sy(0)} L ${sx(g.gn.len)} ${sy(g.gn.rise)} L ${sx(0)} ${sy(g.gn.rise)} L ${sx(0)} ${sy(g.H)} L ${sx(g.totalL)} ${sy(g.H)} Z`;
+  } else {
+    d=`M ${sx(g.totalL)} ${sy(0)} L ${sx(0)} ${sy(0)} L ${sx(0)} ${sy(g.H)} L ${sx(g.totalL)} ${sy(g.H)} Z`;
+  }
+  s += `<path d="${d}" fill="#f8fafc" stroke="#0f172a" stroke-width="2"/>`;
+  if(g.gn) s+=`<rect x="${sx(0)}" y="${sy(g.gn.rise)}" width="${g.gn.len*sc}" height="${g.gn.rise*sc}" fill="#e2e8f0" stroke="#b45309" stroke-dasharray="4 2"/>`;
+  for(const wl of g.wells){ if((side==='left'&&wl.x===0)||(side==='right'&&wl.x>0))
+    s += `<rect x="${sx(wl.z)}" y="${sy(wl.h)}" width="${wl.d*sc}" height="${wl.h*sc}" fill="#cbd5e1" stroke="#64748b" stroke-dasharray="3 2"/>`; }
+  if(g.rear && g.rear.ti>0.01){
+    s += `<rect x="${sx(g.rear.z0)}" y="${sy(g.H)}" width="${g.rear.depth*sc}" height="${g.rear.ti*sc}" fill="#94a3b8" fill-opacity="0.55" stroke="#475569" stroke-dasharray="2 2"/>
+      <text x="${sx(g.rear.z0+g.rear.depth/2)}" y="${sy(g.H)+g.rear.ti*sc/2+3}" font-size="6.5" fill="#334155" text-anchor="middle">LEDGE</text>`;
+  }
+  for(const p of items){
+    const c=roomColor(p.cab.rc);
+    s += `<rect x="${sx(p.z)}" y="${sy(p.y+p.h)}" width="${p.d*sc}" height="${p.h*sc}" fill="${c}" fill-opacity="0.55" stroke="${c}" stroke-width="1.5"/>`;
+    const fs=Math.max(6.5, Math.min(11, p.d*sc/4, p.h*sc/3));
+    s += `<text x="${sx(p.z+p.d/2)}" y="${sy(p.y+p.h/2)}" font-size="${fs}" font-weight="bold" fill="#0f172a" text-anchor="middle" dominant-baseline="middle">${p.cab.rc}</text>`;
+    s += `<text x="${sx(p.z+p.d/2)}" y="${sy(p.y+p.h/2)+fs}" font-size="${fs*0.7}" fill="#334155" text-anchor="middle" dominant-baseline="middle">#${p.seq}</text>`;
+  }
+  s += `<text x="${sx(g.totalL)+4}" y="${sy(g.H/2)}" font-size="10" fill="#dc2626" transform="rotate(90 ${sx(g.totalL)+4} ${sy(g.H/2)})" text-anchor="middle">REAR</text>`;
+  for(let ft=0; ft*12<=g.totalL; ft++){
+    const z=g.totalL-ft*12;
+    s += `<line x1="${sx(z)}" y1="${sy(0)+2}" x2="${sx(z)}" y2="${sy(0)+7}" stroke="#94a3b8"/><text x="${sx(z)}" y="${sy(0)+17}" font-size="7" fill="#94a3b8" text-anchor="middle">${ft}'</text>`;
+  }
+  s+='</svg>';
+  return s;
+}
+function manifestTable(){
+  const {geom:g, placed, failed} = results;
+  let rows = placed.map(p=>{
+    const fromRear=g.totalL-(p.z+p.d);
+    const level = Math.abs(p.y-floorYAt(g,p.z))<0.5 ? (g.gn&&p.z<g.gn.len?'Gooseneck deck':'Floor') : `Stacked @ ${fmtDim(p.y)}"`;
+    const pose = poseText(p).replace(/^./,c=>c.toUpperCase());
+    return `<tr>
+      <td style="font-weight:bold">${p.seq}</td>
+      <td><span style="display:inline-block;width:9px;height:9px;background:${roomColor(p.cab.rc)};margin-right:4px"></span><b>${p.cab.rc}</b></td>
+      <td>${p.cab.name}</td>
+      <td>${fmtDim(p.cab.w)} × ${fmtDim(p.cab.h)} × ${fmtDim(p.cab.d)}</td>
+      <td>${fmtDim(fromRear)}" fwd of rear doors, ${fmtDim(p.x)}" from left wall</td>
+      <td>${level}</td>
+      <td><b>${pose}</b>${p.rot?' · turned 90°':''}${p.cab.fin&&p.cab.fin!=='None'?' · Fin: '+p.cab.fin:''}</td>
+    </tr>`;
+  }).join('');
+  let failHtml = failed.length? `<h3 style="color:#dc2626;margin-top:14px;font-weight:bold">DID NOT FIT (${failed.length})</h3>
+    <ul style="color:#dc2626;font-size:12px;padding-left:18px">${failed.map(c=>`<li>${c.rc} — ${c.name} (${fmtDim(c.w)}×${fmtDim(c.h)}×${fmtDim(c.d)})</li>`).join('')}</ul>`:'';
+  return `<table class="grid" style="font-size:11px"><thead><tr>
+    <th>Load #</th><th>Cabinet #</th><th>Name</th><th>W×H×D</th><th>Position (measure from rear doors / left wall)</th><th>Level</th><th>Notes</th>
+    </tr></thead><tbody>${rows}</tbody></table>` + failHtml;
+}
+function loadingOrderHTML(){
+  const {geom:g, placed} = results;
+  const ply = results.ply || 0;
+  let body='', prevLayer=null;
+  for(const p of placed){
+    const layer = Math.abs(p.y-floorYAt(g,p.z))<0.5 ? 0 : 1;
+    if(prevLayer===0 && layer===1){
+      body += `<div style="display:flex;align-items:center;gap:8px;background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;padding:6px 10px;margin:8px 0;font-weight:800;color:#92400e;font-size:12px">
+        ▩ LAY ${fmtDim(ply||0.5)}" PLYWOOD over the whole deck now — then keep loading on top</div>`;
+    }
+    prevLayer = layer;
+    const fromRear = g.totalL-(p.z+p.d);
+    const big = isBulky(p.cab);
+    const pose = poseText(p);
+    body += `<div style="display:flex;gap:9px;align-items:center;padding:5px 8px;border-bottom:1px solid #e5e7eb;${big?'background:#fff7ed':''}">
+      <div style="font-weight:800;font-size:14px;min-width:26px;text-align:right;color:#0f172a">${p.seq}</div>
+      <div style="width:11px;height:11px;border-radius:2px;background:${roomColor(p.cab.rc)};flex:none"></div>
+      <div style="flex:1;line-height:1.25">
+        <span style="font-weight:700">${p.cab.rc}</span> ${p.cab.name}
+        ${big?'<span style="background:#ea580c;color:#fff;font-size:9px;font-weight:800;padding:1px 6px;border-radius:8px;margin-left:4px;white-space:nowrap">LARGE · 2+ PEOPLE</span>':''}
+        <div style="font-size:11px;color:#475569">${fmtDim(p.cab.w)}×${fmtDim(p.cab.h)}×${fmtDim(p.cab.d)} · <b>${pose}</b>${p.rot?', turned 90°':''} · ${fmtDim(fromRear)}" from rear doors, ${fmtDim(p.x)}" from left wall</div>
+      </div>
+    </div>`;
+  }
+  const intro = `<div style="font-size:11px;color:#475569;margin-bottom:8px">
+    Load strictly top-to-bottom. The bottom deck goes in first (heavy pieces first, while the trailer is empty and there's the most room to carry them up front), then plywood, then the top layer. Orange rows need a two-person carry.</div>`;
+  return intro + `<div style="border:1px solid #cbd5e1;border-radius:8px;overflow:hidden">${body}</div>`;
+}
+function plansHTML(forPrint){
+  if(!results) return '<div class="bg-amber-50 border border-amber-200 rounded p-4 text-sm">No load plan yet — add cabinets, pick a trailer and press <b>Optimize Load</b>.</div>';
+  const {trailer:t, geom:g, placed, failed} = results;
+  const job = el('job-name').value || 'Untitled Job';
+  const hasStacked = placed.some(p=>Math.abs(p.y-floorYAt(g,p.z))>=0.5);
+  const hdr = `<div style="border-bottom:3px solid #0f172a;padding-bottom:8px;margin-bottom:14px">
+    <table style="width:100%"><tr>
+    <td><div style="font-size:22px;font-weight:800">Trailer Load Plan — ${job}</div>
+    <div style="font-size:12px;color:#475569">Trailer: <b>${t.name}</b> (${t.w}"W × ${t.h}"H × ${Math.round(g.totalL)}"L${g.gn?', gooseneck':''}${g.taper?', V-nose':''}${g.wells.length?', wheel wells':''}) ·
+    Clearance between cabinets: ${results.gap}"${hasStacked&&results.ply?' · '+fmtDim(results.ply)+'" plywood deck between layers':''} · ${placed.length} loaded${failed.length?', <span style="color:#dc2626">'+failed.length+' did not fit</span>':''}</div></td>
+    <td style="text-align:right;font-size:11px;color:#64748b">${new Date().toLocaleDateString()}<br>Left wall = your left standing at the rear doors looking forward</td>
+    </tr></table></div>`;
+  const sec = (title,body,brk)=>`<div ${brk&&forPrint?'class="page-break"':''} style="margin-bottom:18px">
+    <h2 style="font-size:15px;font-weight:800;background:#f1f5f9;padding:5px 9px;border-left:4px solid #1e3a8a;margin-bottom:8px">${title}</h2>${body}</div>`;
+  let out = hdr;
+  out += sec('Floor Plan — floor level (top view, front of trailer at left)', svgFloorplan('floor'));
+  if(hasStacked) out += sec('Floor Plan — stacked layer (cabinets loaded on top)', svgFloorplan('stacked'));
+  out += sec('Elevation — LEFT side (cabinets on left half)', svgElevation('left'), true);
+  out += sec('Elevation — RIGHT side (cabinets on right half)', svgElevation('right'));
+  out += sec('Loading Order — follow top to bottom (heavy pieces first, front of trailer first)', loadingOrderHTML(), true);
+  out += sec('Loading Manifest — full detail for every cabinet', manifestTable(), true);
+  return out;
+}
+function renderPlansPreview(){ el('plans-preview').innerHTML = `<div class="bg-white rounded-lg shadow p-6">${plansHTML(false)}</div>`; }
+function doPrint(){
+  if(!results){ alert('Run Optimize Load first.'); return; }
+  el('print-area').innerHTML = plansHTML(true);
+  window.print();
+}
+
+/* =================== INIT =================== */
+loadAll();
+renderCabs();
+renderTrailers();
+editTrailer(null);
+pullServer();   // then overlay durable settings from the NAS, if available
+['gap','plywood','stand-clear','lay-flat','allow-stack'].forEach(id=>{ const e=el(id); if(e) e.addEventListener('change',saveAll); });
+el('job-name').addEventListener('change',saveAll);
+initDbDrop();
+['t-h','t-gnh','t-l','t-wwr','t-wwl','t-wwf'].forEach(id=>el(id).addEventListener('input',tfRefresh));
+</script>
+</body>
+</html>
+
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
