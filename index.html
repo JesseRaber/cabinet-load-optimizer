@@ -16,6 +16,9 @@
     <!-- Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
 
+    <!-- sql.js: SQLite in the browser, so a JobData.db can be read with no server -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
+
     <style>
         body { margin: 0; overflow: hidden; }
         @media print {
@@ -331,21 +334,105 @@
             el.innerText = msg;
         }
 
+        // Read the Mozaik db right here in the browser via sql.js — no server needed,
+        // so this works whether or not the watcher container is running.
+        const MM_TO_IN = 1 / 25.4;
+        function frac(v) { return Math.round(v * 16) / 16; }   // nearest 1/16"
+
+        let sqlJsPromise = null;
+        function loadSqlJs() {
+            if (!sqlJsPromise) {
+                if (typeof initSqlJs !== 'function') return Promise.reject(new Error('sql.js not loaded'));
+                sqlJsPromise = initSqlJs({
+                    locateFile: f => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/${f}`
+                });
+            }
+            return sqlJsPromise;
+        }
+
+        function rowsOf(db, sql) {
+            let res;
+            try { res = db.exec(sql); } catch (e) { return []; }
+            if (!res.length) return [];
+            const { columns, values } = res[0];
+            return values.map(v => Object.fromEntries(columns.map((c, i) => [c, v[i]])));
+        }
+
+        // Mirrors extract_job() in watcher.py so uploads match watched jobs exactly.
+        function extractJobFromDb(db) {
+            const job = rowsOf(db, 'SELECT JobName, Customer FROM JobTable LIMIT 1')[0] || {};
+
+            const rooms = {};
+            for (const r of rowsOf(db, 'SELECT ID, [Room.] AS num, roomName FROM RoomTable')) {
+                rooms[r.ID] = { name: r.roomName, num: r.num };
+            }
+
+            const cabRows = rowsOf(db,
+                'SELECT Room, [Cab.] AS cab, cabName, Type, W, H, D, quan, finEnds FROM CabinetTable');
+            if (!cabRows.length) throw new Error('No CabinetTable found — is this a Mozaik JobData.db?');
+
+            const cabinets = [];
+            for (const r of cabRows) {
+                const room = rooms[r.Room] || { name: `Room ${r.Room}`, num: r.Room };
+                const w = frac((r.W || 0) * MM_TO_IN);
+                const h = frac((r.H || 0) * MM_TO_IN);
+                const d = frac((r.D || 0) * MM_TO_IN);
+                if (w <= 0 || h <= 0 || d <= 0) continue;
+                const name = r.cabName || 'Cabinet';
+                cabinets.push({
+                    rc: `R${room.num}C${r.cab}`,
+                    room: room.name, roomNum: room.num, cabNum: String(r.cab),
+                    name, type: r.Type || 'Cabinet',
+                    w, h, d,
+                    quan: parseInt(r.quan || 1, 10),
+                    finEnds: r.finEnds,
+                    stackable: h <= 50 && !name.toLowerCase().includes('tall'),
+                });
+            }
+            if (!cabinets.length) throw new Error('No cabinets with valid dimensions found.');
+            return {
+                jobName: job.JobName || 'Uploaded job',
+                customer: job.Customer || '',
+                cabinetCount: cabinets.length,
+                cabinets,
+            };
+        }
+
         async function uploadJobFile(file) {
             if (!file) return;
             setUploadStatus(`Reading ${file.name}…`, 'busy');
-            const fd = new FormData();
-            fd.append('file', file);
             try {
-                const res = await fetch('/api/upload', { method: 'POST', body: fd });
-                let data;
-                try { data = await res.json(); }
-                catch { throw new Error(`Server returned ${res.status}`); }
-                if (!res.ok) throw new Error(data.error || `Upload failed (${res.status})`);
+                const buf = new Uint8Array(await file.arrayBuffer());
 
-                applyJobData(data);                 // load it straight into the inventory
-                await refreshJobs(data.job);        // and add it to the picker
-                setUploadStatus(`Imported ${data.cabinetCount} cabinets from "${data.jobName}".`, 'ok');
+                // Cheap sanity check before handing it to SQLite.
+                const magic = new TextDecoder().decode(buf.slice(0, 15));
+                if (magic !== 'SQLite format 3') {
+                    throw new Error('That file is not a SQLite database. Pick the JobData.db from the Mozaik job folder.');
+                }
+
+                let data;
+                try {
+                    const SQL = await loadSqlJs();
+                    const db = new SQL.Database(buf);
+                    try { data = extractJobFromDb(db); } finally { db.close(); }
+                } catch (e) {
+                    // sql.js unavailable (offline?) — fall back to the watcher API if it's there.
+                    if (/sql\.js|WASM|fetch|network/i.test(e.message)) {
+                        const fd = new FormData();
+                        fd.append('file', file);
+                        const res = await fetch('/api/upload', { method: 'POST', body: fd });
+                        const j = await res.json();
+                        if (!res.ok) throw new Error(j.error || `Upload failed (${res.status})`);
+                        data = j;
+                    } else {
+                        throw e;
+                    }
+                }
+
+                applyJobData(data);
+                setUploadStatus(
+                    `Imported ${data.cabinetCount} cabinets from "${data.jobName}"` +
+                    (data.customer ? ` (${data.customer})` : '') + '.', 'ok');
             } catch (err) {
                 setUploadStatus(err.message, 'error');
             }
