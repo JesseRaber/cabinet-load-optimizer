@@ -106,17 +106,19 @@
             <div id="import-msg" class="text-xs mt-2"></div>
           </div>
           <div class="bg-white rounded-lg shadow p-4">
-            <h2 class="font-bold text-sm mb-2">Add Cabinet Manually</h2>
+            <h2 class="font-bold text-sm mb-2">Add Cabinet or Package Manually</h2>
             <div class="grid grid-cols-2 gap-2">
               <div class="col-span-2"><span class="lbl">Name</span><input id="m-name" type="text" placeholder="Custom Base Cab"></div>
-              <div><span class="lbl">Room/Cab # *</span><input id="m-rc" type="text" placeholder="R1C4"></div>
+              <div><span class="lbl">Room/Cab #</span><input id="m-rc" type="text" placeholder="R1C4 — blank = package"></div>
+              <div><span class="lbl">Package #</span><input id="m-pkg" type="number" min="1" step="1" placeholder="optional"></div>
               <div><span class="lbl">Qty</span><input id="m-qty" type="number" value="1" min="1"></div>
               <div><span class="lbl">Width"</span><input id="m-w" type="text" placeholder='24 or 34 1/2'></div>
               <div><span class="lbl">Height"</span><input id="m-h" type="text"></div>
               <div><span class="lbl">Depth"</span><input id="m-d" type="text"></div>
               <div class="flex items-end pb-1"><label class="text-xs flex gap-1 items-center"><input type="checkbox" id="m-stack" checked class="w-4 h-4"> Can support stacking</label></div>
             </div>
-            <button class="btn btn-blue w-full justify-center mt-3" onclick="addManual()">Add Cabinet</button>
+            <div class="text-[10px] text-slate-400 mt-1.5">Leave Room/Cab # blank for trim bundles, loose doors and other packages.</div>
+            <button class="btn btn-blue w-full justify-center mt-3" onclick="addManual()">Add Item</button>
           </div>
         </div>
         <div class="lg:col-span-2">
@@ -127,7 +129,7 @@
             </div>
             <div class="overflow-auto max-h-[70vh]">
               <table class="grid" id="cab-table">
-                <thead><tr><th>Room/Cab #</th><th>Name</th><th>W"</th><th>H"</th><th>D"</th><th>Description</th><th>Fin. Ends</th><th title="Other cabinets may be stacked on top of this one">Stack On</th><th></th></tr></thead>
+                <thead><tr><th>Room/Cab · Pkg #</th><th>Name</th><th>W"</th><th>H"</th><th>D"</th><th>Description</th><th>Fin. Ends</th><th title="Other cabinets may be stacked on top of this one">Stack On</th><th></th></tr></thead>
                 <tbody id="cab-tbody"></tbody>
               </table>
             </div>
@@ -266,6 +268,9 @@
 const LS = { trailers:'clo_trailers_v1', cabs:'clo_cabs_v1', misc:'clo_misc_v1' };
 let trailers = [], cabinets = [], activeTrailerId = null, results = null, editingTrailerId = null;
 const ROOM_COLORS = ['#3b82f6','#f97316','#10b981','#8b5cf6','#ef4444','#06b6d4','#eab308','#ec4899','#84cc16','#6366f1'];
+/* Packages (trim bundles, loose doors, misc.) have no room — they share one
+   group and a warm grey that is deliberately not in the room palette above. */
+const PKG_ROOM = 'Packages', PKG_COLOR = '#78716c';
 
 function miscState(){
   return { activeTrailerId, job:el('job-name').value, gap:el('gap').value,
@@ -489,15 +494,30 @@ function initDbDrop(){
 function loadSample(){
   el('mozaik-paste').value = "1\t90° Base Corner\t36\t34 1/2\t36\tBase - Corner 90°\tNone\tR1C3\n1\tCustom Base Cab\t72 1/4\t34 1/2\t24\tCustomized Base Cabinet\tNone\tR1C2\n1\tCustom Base Cab\t53\t34 1/2\t24\tCustomized Base Cabinet\tNone\tR1C1\n2\tWall Cab\t30\t30\t12\tWall Cabinet\tNone\tR1C4\n1\tTall Pantry\t24\t84\t24\tPantry\tLeft\tR1C5";
 }
+/* Packages default to NOT supporting a stack on top, cabinets do. `stackTouched`
+   keeps an explicit tick of the box from being overwritten while typing. */
+let stackTouched = false;
+function syncStackDefault(){
+  if(!stackTouched) el('m-stack').checked = !!el('m-rc').value.trim();
+}
+/* No Room/Cab # means this is a package — a trim bundle, loose doors or other
+   misc. item that belongs to no room. Packages carry the same shape as a
+   cabinet so the packer, 3D view and plans need no special cases; they are only
+   grouped and coloured apart via `room`. */
 function addManual(){
   const w=parseDim(el('m-w').value), h=parseDim(el('m-h').value), d=parseDim(el('m-d').value);
-  const rc=el('m-rc').value.trim(), qty=parseInt(el('m-qty').value)||1;
-  if(!rc||isNaN(w)||isNaN(h)||isNaN(d)){ alert('Room/Cab # and all three dimensions are required.'); return; }
+  const rc=el('m-rc').value.trim(), pkg=el('m-pkg').value.trim(), qty=parseInt(el('m-qty').value)||1;
+  if(isNaN(w)||isNaN(h)||isNaN(d)){ alert('All three dimensions are required.'); return; }
+  const isPkg = !rc;
+  const base = isPkg ? (pkg? 'P'+pkg : 'PKG') : rc;
   for(let q=0;q<qty;q++){
-    cabinets.push({ id:'c'+Date.now()+'_'+q, rc: qty>1? rc+'.'+(q+1):rc, name:el('m-name').value||'Cabinet',
-      w,h,d, desc:'', fin:'', stackOn: el('m-stack').checked });
+    cabinets.push({ id:'c'+Date.now()+'_'+q, rc: qty>1? base+'.'+(q+1):base,
+      name:el('m-name').value||(isPkg?'Package':'Cabinet'),
+      w,h,d, desc:'', fin:'', stackOn: el('m-stack').checked,
+      isPkg, pkg: isPkg? pkg : '', room: isPkg? PKG_ROOM : '' });
   }
-  ['m-name','m-rc','m-w','m-h','m-d'].forEach(i=>el(i).value=''); el('m-qty').value=1;
+  ['m-name','m-rc','m-pkg','m-w','m-h','m-d'].forEach(i=>el(i).value=''); el('m-qty').value=1;
+  stackTouched = false; syncStackDefault();
   renderCabs(); saveAll();
 }
 function delCab(id){ cabinets = cabinets.filter(c=>c.id!==id); renderCabs(); saveAll(); }
@@ -510,9 +530,16 @@ function fmtDim(v){ // 34.5 -> 34 1/2
   let n=sixteenths, dd=16; while(n%2===0){n/=2;dd/=2;}
   return (whole? whole+' ':'')+n+'/'+dd;
 }
-function roomOf(rc){ const m=(''+rc).match(/^R?(\w+?)C/i); return m? m[1] : rc; }
-function roomColor(rc){
-  const r=roomOf(rc); let hsh=0; for(const ch of (''+r)) hsh=(hsh*31+ch.charCodeAt(0))>>>0;
+/* Accepts either an item or a bare rc string. Items added before packages
+   existed have no `room`, so they fall through to the rc regex as before. */
+function roomOf(c){
+  if(c && typeof c==='object'){ if(c.room) return c.room; c = c.rc; }
+  const m=(''+c).match(/^R?(\w+?)C/i); return m? m[1] : c;
+}
+function roomColor(c){
+  const r=roomOf(c);
+  if(r===PKG_ROOM) return PKG_COLOR;
+  let hsh=0; for(const ch of (''+r)) hsh=(hsh*31+ch.charCodeAt(0))>>>0;
   return ROOM_COLORS[hsh % ROOM_COLORS.length];
 }
 function poseText(p){ return p.pose==='back' ? 'laid on back' : p.pose==='side' ? 'on side' : 'standing upright'; }
@@ -522,10 +549,10 @@ function isBulky(c){
   return Math.max(c.w,c.h,c.d) >= 40 || (c.w>=30 && c.h>=30 && c.d>=20) || (c.w*c.h*c.d) >= 30000;
 }
 function renderCabs(){
-  el('cab-count').textContent = cabinets.length+' cabinets';
+  el('cab-count').textContent = cabinets.length+' items';
   el('cab-tbody').innerHTML = cabinets.map(c=>`
     <tr>
-      <td><span class="inline-block w-2.5 h-2.5 rounded-sm mr-1" style="background:${roomColor(c.rc)}"></span><b>${c.rc}</b></td>
+      <td><span class="inline-block w-2.5 h-2.5 rounded-sm mr-1" style="background:${roomColor(c)}"></span><b>${c.rc}</b></td>
       <td>${c.name}</td><td>${fmtDim(c.w)}</td><td>${fmtDim(c.h)}</td><td>${fmtDim(c.d)}</td>
       <td class="text-slate-500">${c.desc||''}</td><td>${c.fin||''}</td>
       <td class="text-center"><input type="checkbox" ${c.stackOn?'checked':''} onchange="toggleStack('${c.id}')"></td>
@@ -884,7 +911,7 @@ function updateStats(){
   el('seq-list').innerHTML = placed.map(p=>{
     const fromRear = g.totalL-(p.z+p.d);
     const onFloor = Math.abs(p.y-floorYAt(g,p.z))<0.5;
-    return `<div class="border rounded p-1.5 flex items-center gap-2" style="border-left:4px solid ${roomColor(p.cab.rc)}">
+    return `<div class="border rounded p-1.5 flex items-center gap-2" style="border-left:4px solid ${roomColor(p.cab)}">
       <b class="text-slate-400">#${p.seq}</b>
       <div><b>${p.cab.rc}</b> ${p.cab.name}${isBulky(p.cab)?' <span class="text-[9px] font-bold text-white bg-orange-500 rounded px-1">2+ ppl</span>':''}<br>
       <span class="text-slate-500">${fmtDim(p.cab.w)}×${fmtDim(p.cab.h)}×${fmtDim(p.cab.d)} · ${fromRear.toFixed(0)}" from rear · ${p.x.toFixed(0)}" from left${onFloor?'':' · stacked at '+p.y.toFixed(0)+'"'} · <b class="text-slate-600">${poseText(p)}</b>${p.rot?', turned 90°':''}</span></div>
@@ -992,7 +1019,7 @@ function draw3D(){
   // cabinets
   if(results){
     for(const p of results.placed){
-      const col = new THREE.Color(roomColor(p.cab.rc));
+      const col = new THREE.Color(roomColor(p.cab));
       const geo = new THREE.BoxGeometry(Math.max(0.5,p.w-0.4), Math.max(0.5,p.h-0.4), Math.max(0.5,p.d-0.4));
       const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({color:col, transparent:true, opacity:.92}));
       mesh.position.set(p.x+p.w/2+ox, p.y+p.h/2, p.z+p.d/2+oz);
@@ -1042,7 +1069,7 @@ function svgFloorplan(level){ // level: 'floor' | 'stacked'
   let s = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:${W}px">`;
   s += svgFloorOutline(g, sc, pad);
   for(const p of items){
-    const c=roomColor(p.cab.rc);
+    const c=roomColor(p.cab);
     s += `<rect x="${sx(p.z)}" y="${sy(p.x)}" width="${p.d*sc}" height="${p.w*sc}" fill="${c}" fill-opacity="0.55" stroke="${c}" stroke-width="1.5"/>`;
     const fs = Math.max(6.5, Math.min(11, p.d*sc/4, p.w*sc/3));
     s += `<text x="${sx(p.z+p.d/2)}" y="${sy(p.x+p.w/2)}" font-size="${fs}" font-weight="bold" fill="#0f172a" text-anchor="middle" dominant-baseline="middle">${p.cab.rc}</text>`;
@@ -1080,7 +1107,7 @@ function svgElevation(side){ // 'left' | 'right' : cabinets whose center is on t
       <text x="${sx(g.rear.z0+g.rear.depth/2)}" y="${sy(g.H)+g.rear.ti*sc/2+3}" font-size="6.5" fill="#334155" text-anchor="middle">LEDGE</text>`;
   }
   for(const p of items){
-    const c=roomColor(p.cab.rc);
+    const c=roomColor(p.cab);
     s += `<rect x="${sx(p.z)}" y="${sy(p.y+p.h)}" width="${p.d*sc}" height="${p.h*sc}" fill="${c}" fill-opacity="0.55" stroke="${c}" stroke-width="1.5"/>`;
     const fs=Math.max(6.5, Math.min(11, p.d*sc/4, p.h*sc/3));
     s += `<text x="${sx(p.z+p.d/2)}" y="${sy(p.y+p.h/2)}" font-size="${fs}" font-weight="bold" fill="#0f172a" text-anchor="middle" dominant-baseline="middle">${p.cab.rc}</text>`;
@@ -1100,9 +1127,11 @@ function manifestTable(){
     const fromRear=g.totalL-(p.z+p.d);
     const level = Math.abs(p.y-floorYAt(g,p.z))<0.5 ? (g.gn&&p.z<g.gn.len?'Gooseneck deck':'Floor') : `Stacked @ ${fmtDim(p.y)}"`;
     const pose = poseText(p).replace(/^./,c=>c.toUpperCase());
+    // Cabinets show R#C#; a package shows its number, or nothing if it has none.
+    const numLabel = (p.cab.isPkg && !p.cab.pkg) ? '' : p.cab.rc;
     return `<tr>
       <td style="font-weight:bold">${p.seq}</td>
-      <td><span style="display:inline-block;width:9px;height:9px;background:${roomColor(p.cab.rc)};margin-right:4px"></span><b>${p.cab.rc}</b></td>
+      <td><span style="display:inline-block;width:9px;height:9px;background:${roomColor(p.cab)};margin-right:4px"></span><b>${numLabel}</b></td>
       <td>${p.cab.name}</td>
       <td>${fmtDim(p.cab.w)} × ${fmtDim(p.cab.h)} × ${fmtDim(p.cab.d)}</td>
       <td>${fmtDim(fromRear)}" fwd of rear doors, ${fmtDim(p.x)}" from left wall</td>
@@ -1113,7 +1142,7 @@ function manifestTable(){
   let failHtml = failed.length? `<h3 style="color:#dc2626;margin-top:14px;font-weight:bold">DID NOT FIT (${failed.length})</h3>
     <ul style="color:#dc2626;font-size:12px;padding-left:18px">${failed.map(c=>`<li>${c.rc} — ${c.name} (${fmtDim(c.w)}×${fmtDim(c.h)}×${fmtDim(c.d)})</li>`).join('')}</ul>`:'';
   return `<table class="grid" style="font-size:11px"><thead><tr>
-    <th>Load #</th><th>Cabinet #</th><th>Name</th><th>W×H×D</th><th>Position (measure from rear doors / left wall)</th><th>Level</th><th>Notes</th>
+    <th>Load #</th><th>Cabinet · Pkg #</th><th>Name</th><th>W×H×D</th><th>Position (measure from rear doors / left wall)</th><th>Level</th><th>Notes</th>
     </tr></thead><tbody>${rows}</tbody></table>` + failHtml;
 }
 function loadingOrderHTML(){
@@ -1132,7 +1161,7 @@ function loadingOrderHTML(){
     const pose = poseText(p);
     body += `<div style="display:flex;gap:9px;align-items:center;padding:5px 8px;border-bottom:1px solid #e5e7eb;${big?'background:#fff7ed':''}">
       <div style="font-weight:800;font-size:14px;min-width:26px;text-align:right;color:#0f172a">${p.seq}</div>
-      <div style="width:11px;height:11px;border-radius:2px;background:${roomColor(p.cab.rc)};flex:none"></div>
+      <div style="width:11px;height:11px;border-radius:2px;background:${roomColor(p.cab)};flex:none"></div>
       <div style="flex:1;line-height:1.25">
         <span style="font-weight:700">${p.cab.rc}</span> ${p.cab.name}
         ${big?'<span style="background:#ea580c;color:#fff;font-size:9px;font-weight:800;padding:1px 6px;border-radius:8px;margin-left:4px;white-space:nowrap">LARGE · 2+ PEOPLE</span>':''}
@@ -1183,6 +1212,9 @@ pullServer();   // then overlay durable settings from the NAS, if available
 ['gap','plywood','stand-clear','lay-flat','allow-stack'].forEach(id=>{ const e=el(id); if(e) e.addEventListener('change',saveAll); });
 el('job-name').addEventListener('change',saveAll);
 initDbDrop();
+el('m-stack').addEventListener('change', ()=>{ stackTouched = true; });
+el('m-rc').addEventListener('input', syncStackDefault);
+syncStackDefault();
 ['t-h','t-gnh','t-l','t-wwr','t-wwl','t-wwf'].forEach(id=>el(id).addEventListener('input',tfRefresh));
 </script>
 </body>
