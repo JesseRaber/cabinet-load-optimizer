@@ -25,8 +25,3 @@ Everything runs client-side. The site is just static files on GitHub Pages — n
 
 - `index.html` — a tiny redirect so the Pages root URL opens the app.
 - `cabinet-load-optimizer.html` — the app itself: self-contained, with drag-drop `.db` import, CSV import, 3D + 2D views, and the printable manifest.
-- `watcher.py`, `Dockerfile`, `docker-compose.yml`, `requirements.txt` — an optional NAS auto-import service, **not used by the hosted site**. Preserved for later (see below).
-
-## Optional: NAS auto-import (future)
-
-`watcher.py` is a Flask + watchdog service intended to run in Docker / Container Manager on a Synology NAS. It watches a Mozaik Jobs share for `JobData.db` changes, extracts the cabinet list automatically, and serves the app with a built-in job picker — no drag-drop needed. It isn't required for the hosted version and isn't wired into it; it's kept here for when the app moves onto the NAS.
