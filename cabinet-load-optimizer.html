@@ -51,8 +51,8 @@
       <label class="text-xs text-slate-300">Clearance
         <input type="number" id="gap" value="1" min="0.25" step="0.25" class="!w-16 !bg-slate-800 !border-slate-600 text-white ml-1 inline-block" />"
       </label>
-      <label class="text-xs text-slate-300 flex items-center gap-1" title="Load cabinets lying on their backs (face up) instead of standing them up. Recommended — matches how the crew carries them in.">
-        <input type="checkbox" id="lay-flat" checked class="w-4 h-4"> Lay flat
+      <label class="text-xs text-slate-300 flex items-center gap-1" title="Allow a cabinet to be loaded face up (doors toward the ceiling) as a last resort, when it will not go on its side or upright. Face-up cabinets are never put on the floor and never get anything stacked on them. Turn this off to refuse face-up loading entirely.">
+        <input type="checkbox" id="allow-back" checked class="w-4 h-4"> Allow face-up
       </label>
       <label class="text-xs text-slate-300 flex items-center gap-1">
         <input type="checkbox" id="allow-stack" checked class="w-4 h-4"> Stacking
@@ -104,6 +104,16 @@
               <button class="btn btn-gray" onclick="loadSample()">Sample</button>
             </div>
             <div id="import-msg" class="text-xs mt-2"></div>
+          </div>
+          <div class="bg-white rounded-lg shadow p-4">
+            <h2 class="font-bold text-sm mb-2">How the Load Gets Built</h2>
+            <ol class="text-xs text-slate-600 space-y-1.5 list-decimal pl-4">
+              <li><b>Floor = base cabinets, standing upright.</b> They're the only pieces strong enough to carry several layers, so the bottom deck is filled with them first — widest first, so the heavy ones land up front.</li>
+              <li><b>Leftover floor = tall &amp; wall cabinets on their side</b>, end panel down. The face pointing up is a solid gable, so the next layer can ride on them.</li>
+              <li><b>Plywood over the deck</b>, then the upper layers go on.</li>
+              <li><b>Face up is the last resort.</b> A cabinet is only laid doors-up when it won't go on its side or upright — never on the floor, and nothing is ever stacked on top of it.</li>
+              <li><b>Panels, fillers and trim</b> lie flat and fill the gaps between layers.</li>
+            </ol>
           </div>
           <div class="bg-white rounded-lg shadow p-4">
             <h2 class="font-bold text-sm mb-2">Add Cabinet or Package Manually</h2>
@@ -237,6 +247,8 @@
             <div class="flex justify-between"><span class="text-slate-500">Did not fit</span><b id="s-failed" class="text-red-600">0</b></div>
             <div class="flex justify-between"><span class="text-slate-500">Floor used</span><b id="s-floor">0%</b></div>
             <div class="flex justify-between"><span class="text-slate-500">Volume used</span><b id="s-vol">0%</b></div>
+            <div class="flex justify-between"><span class="text-slate-500">Deck (bases upright)</span><b id="s-deck">0</b></div>
+            <div id="s-poses" class="mt-1.5 pt-1.5 border-t text-[11px] text-slate-600 space-y-0.5"></div>
             <div id="s-faillist" class="mt-2 text-xs text-red-600 max-h-24 overflow-auto"></div>
             <div class="text-[10px] text-slate-400 mt-2 border-t pt-1">Drag: rotate · Right-drag: pan · Scroll: zoom<br>Rear doors = open end (red line)</div>
           </div>
@@ -275,7 +287,7 @@ const PKG_ROOM = 'Packages', PKG_COLOR = '#78716c';
 function miscState(){
   return { activeTrailerId, job:el('job-name').value, gap:el('gap').value,
     stack:el('allow-stack').checked,
-    layFlat: el('lay-flat') ? el('lay-flat').checked : true,
+    allowBack: el('allow-back') ? el('allow-back').checked : true,
     plywood: el('plywood') ? el('plywood').value : '0.5',
     standClear: el('stand-clear') ? el('stand-clear').value : '3' };
 }
@@ -317,7 +329,7 @@ function pullServer(){
         if(m.job!=null) el('job-name').value = m.job;
         if(m.gap!=null) el('gap').value = m.gap;
         if(m.stack!==undefined) el('allow-stack').checked = m.stack;
-        if(m.layFlat!==undefined && el('lay-flat')) el('lay-flat').checked = m.layFlat;
+        if(m.allowBack!==undefined && el('allow-back')) el('allow-back').checked = m.allowBack;
         if(m.plywood!=null && el('plywood')) el('plywood').value = m.plywood;
         if(m.standClear!=null && el('stand-clear')) el('stand-clear').value = m.standClear;
         if(!trailers.find(t=>t.id===activeTrailerId)) activeTrailerId = trailers[0].id;
@@ -337,7 +349,7 @@ function loadAll(){
     if(m.job) el('job-name').value = m.job;
     if(m.gap) el('gap').value = m.gap;
     if(m.stack!==undefined) el('allow-stack').checked = m.stack;
-    if(m.layFlat!==undefined && el('lay-flat')) el('lay-flat').checked = m.layFlat;
+    if(m.allowBack!==undefined && el('allow-back')) el('allow-back').checked = m.allowBack;
     if(m.plywood!==undefined && el('plywood')) el('plywood').value = m.plywood;
     if(m.standClear!==undefined && el('stand-clear')) el('stand-clear').value = m.standClear;
   }catch(e){}
@@ -542,18 +554,20 @@ function roomColor(c){
   let hsh=0; for(const ch of (''+r)) hsh=(hsh*31+ch.charCodeAt(0))>>>0;
   return ROOM_COLORS[hsh % ROOM_COLORS.length];
 }
-function poseText(p){ return p.pose==='back' ? 'laid on back' : p.pose==='side' ? 'on side' : 'standing upright'; }
+function poseText(p){ return p.pose==='back' ? 'FACE UP (doors up)' : p.pose==='side' ? 'on its side' : 'standing upright'; }
 /* A cabinet that realistically needs two or more people to carry — flagged so it
    gets loaded early while there is room to maneuver. */
 function isBulky(c){
   return Math.max(c.w,c.h,c.d) >= 40 || (c.w>=30 && c.h>=30 && c.d>=20) || (c.w*c.h*c.d) >= 30000;
 }
+const CLASS_BADGE={ base:'bg-blue-100 text-blue-800', tall:'bg-purple-100 text-purple-800',
+  wall:'bg-emerald-100 text-emerald-800', flat:'bg-slate-200 text-slate-600', pkg:'bg-stone-200 text-stone-700' };
 function renderCabs(){
   el('cab-count').textContent = cabinets.length+' items';
   el('cab-tbody').innerHTML = cabinets.map(c=>`
     <tr>
       <td><span class="inline-block w-2.5 h-2.5 rounded-sm mr-1" style="background:${roomColor(c)}"></span><b>${c.rc}</b></td>
-      <td>${c.name}</td><td>${fmtDim(c.w)}</td><td>${fmtDim(c.h)}</td><td>${fmtDim(c.d)}</td>
+      <td>${c.name}<span class="ml-1 text-[9px] font-bold uppercase rounded px-1 py-0.5 align-middle ${CLASS_BADGE[cabClass(c)]}" title="${CLASS_TIP[cabClass(c)]||''}">${CLASS_LABEL[cabClass(c)]||''}</span></td><td>${fmtDim(c.w)}</td><td>${fmtDim(c.h)}</td><td>${fmtDim(c.d)}</td>
       <td class="text-slate-500">${c.desc||''}</td><td>${c.fin||''}</td>
       <td class="text-center"><input type="checkbox" ${c.stackOn?'checked':''} onchange="toggleStack('${c.id}')"></td>
       <td><button class="text-red-500 hover:text-red-700 font-bold" onclick="delCab('${c.id}')">✕</button></td>
@@ -707,122 +721,229 @@ function boxesOverlapXZ(a,b,gap){
 }
 function boxesOverlapY(a,b){ return a.y < b.y+b.h-0.01 && b.y < a.y+a.h-0.01; }
 
-/* A placed cabinet can carry a layer above it if it is lying flat (on its back
-   or side, so a plywood sheet spans its top like a floor) OR it is explicitly
-   flagged stack-on. Upright cabinets only carry weight when flagged stack-on. */
-function isSupport(p){ return !!p && (p.pose==='back' || p.pose==='side' || (p.cab && p.cab.stackOn)); }
+/* =================== WHAT KIND OF CABINET IS IT ===================
+   The loading rules are different for each kind, so every item is sorted into
+   one of these before packing:
 
-/* Loading poses, listed in preference order.
-     back    = cabinet lying on its back, face up  -> DEPTH is vertical  (preferred)
-     side    = cabinet resting on an end panel      -> WIDTH is vertical
-     upright = cabinet standing as in the kitchen   -> HEIGHT is vertical (last resort) */
-function flatPoses(cab, allowSide){
+     base  – short and deep (bases, vanities, sink & drawer bases). The strong
+             ones. These ride STANDING UPRIGHT on the trailer floor and carry
+             every layer above them.
+     tall  – 55" or taller (pantries, oven cabinets, tall utility).
+     wall  – short and shallow (uppers).
+     flat  – anything under 3" in one direction: skins, panels, fillers,
+             valances, floating shelves, mouldings. No doors to crush, so these
+             lie flat and fill the gaps between layers.
+     pkg   – trim bundles / loose doors / misc. added without a Room-Cab #.   */
+function cabClass(c){
+  if(c.isPkg) return 'pkg';
+  if(Math.min(c.w,c.h,c.d) <= 3) return 'flat';
+  if(c.h >= 55) return 'tall';
+  if(c.d >= 17) return 'base';
+  return 'wall';
+}
+const CLASS_LABEL = { base:'Base', tall:'Tall', wall:'Wall', flat:'Panel/Trim', pkg:'Package' };
+const CLASS_TIP = {
+  base:'Base cabinet — loaded standing upright on the floor, carries the layers above',
+  tall:'Tall cabinet — laid on its side (end panel down) so weight never sits on the doors',
+  wall:'Wall cabinet — laid on its side (end panel down) so weight never sits on the doors',
+  flat:'Panel, filler or trim — lies flat and fills gaps between layers',
+  pkg :'Package — no room/cabinet number'
+};
+
+/* Three ways a piece can ride, in plain terms:
+     upright = sitting on its base, the way it hangs in the kitchen  (H vertical)
+     side    = tipped onto an end panel                              (W vertical)
+     back    = face up, doors toward the ceiling                     (D vertical)
+
+   Preference by kind. Tall and wall cabinets go on their SIDE first: the face
+   pointing up is a solid gable, so other cabinets can ride on top of them. Face
+   up is the last resort for a real cabinet, because the doors end up carrying
+   whatever is stacked over them. */
+const POSE_ORDER = {
+  base : ['upright','side','back'],
+  tall : ['side','back','upright'],
+  wall : ['side','upright','back'],
+  flat : ['back','side','upright'],
+  pkg  : ['back','side','upright'],
+  other: ['side','upright','back']
+};
+function makePoses(cab, kinds){
   const P=[];
-  P.push({ w:cab.w, h:cab.d, d:cab.h, pose:'back', rot:false });        // on its back
-  if(cab.w!==cab.h) P.push({ w:cab.h, h:cab.d, d:cab.w, pose:'back', rot:true });
-  if(allowSide){
-    P.push({ w:cab.h, h:cab.w, d:cab.d, pose:'side', rot:false });      // on its side
-    if(cab.h!==cab.d) P.push({ w:cab.d, h:cab.w, d:cab.h, pose:'side', rot:true });
+  for(const k of kinds){
+    if(k==='upright'){
+      P.push({w:cab.w,h:cab.h,d:cab.d,pose:'upright',rot:false});
+      if(cab.w!==cab.d) P.push({w:cab.d,h:cab.h,d:cab.w,pose:'upright',rot:true});
+    } else if(k==='side'){
+      P.push({w:cab.h,h:cab.w,d:cab.d,pose:'side',rot:false});
+      if(cab.h!==cab.d) P.push({w:cab.d,h:cab.w,d:cab.h,pose:'side',rot:true});
+    } else {
+      P.push({w:cab.w,h:cab.d,d:cab.h,pose:'back',rot:false});
+      if(cab.w!==cab.h) P.push({w:cab.h,h:cab.d,d:cab.w,pose:'back',rot:true});
+    }
   }
   return P;
 }
-function uprightPoses(cab){
-  const P=[{ w:cab.w, h:cab.h, d:cab.d, pose:'upright', rot:false }];
-  if(cab.w!==cab.d) P.push({ w:cab.d, h:cab.h, d:cab.w, pose:'upright', rot:true });
-  return P;
+/* Can another layer ride on top of this placed piece? */
+function isSupport(p){
+  if(!p) return false;
+  const c = p.cab || {};
+  if(p.cls==='flat')  return p.h <= 3.01;   // lying flat — load passes straight through
+  if(p.cls==='pkg')   return !!c.stackOn;
+  if(p.pose==='back') return false;         // doors are facing up: never load on them
+  if(p.pose==='side') return true;          // end panel up: the strongest way to stack
+  return !!c.stackOn;                       // upright — bases yes, talls no
 }
+/* Only doorless pieces are allowed to lie face-up on the floor. */
+function flatOnFloorOK(cls){ return cls==='pkg' || cls==='flat'; }
+function isFaceUp(p){ return p.pose==='back' && p.cls!=='pkg' && p.cls!=='flat'; }
 
-/* Most common depth among the "big" cabinets (bases & talls, depth >= 18").
-   Laid on their backs these all rise to this same height, forming the flat
-   bottom deck that plywood is laid over. */
-function dominantDepth(cabs){
-  const pool = cabs.filter(c=> c.d >= 18);
-  const src = pool.length ? pool : cabs;
-  const bins = {};
-  for(const c of src){ const k=Math.round(c.d); bins[k]=(bins[k]||0)+1; }
-  let best=24, bestN=-1;
-  for(const k in bins){ if(bins[k]>bestN){ bestN=bins[k]; best=+k; } }
-  return best;
+/* =================== PACKING ===================
+   Placed pieces are bucketed along the length of the trailer so a collision test
+   only looks at its neighbours instead of the whole load. */
+const BK=48;
+function mkIndex(){ return {b:{}, stamp:0}; }
+function idxAdd(ix,p){
+  const a=Math.floor(p.z/BK), b=Math.floor((p.z+p.d)/BK);
+  for(let i=a;i<=b;i++) (ix.b[i]=ix.b[i]||[]).push(p);
 }
-
-function canPlace(g, placed, gap, x,y,z,w,h,d, ply){
+function idxNear(ix,z0,z1,out){
+  out.length=0; const s=++ix.stamp;
+  const a=Math.floor(z0/BK), b=Math.floor(z1/BK);
+  for(let i=a;i<=b;i++){ const L=ix.b[i]; if(!L) continue;
+    for(let j=0;j<L.length;j++){ const p=L[j]; if(p._s!==s){ p._s=s; out.push(p); } } }
+  return out;
+}
+const _near=[];
+function canPlace(g,ix,gap,x,y,z,w,h,d,ply,cpose,ccls){
   const eps=0.01;
   if(x<-eps || z<-eps) return false;
   if(y+h > g.H+eps) return false;
   if(z+d > g.totalL+eps) return false;
-  // gooseneck region rules
   if(g.gn){
-    const inGN = z < g.gn.len-eps, crossGN = inGN && (z+d > g.gn.len+eps);
-    if(crossGN) return false;                       // can't span the deck step
-    if(inGN && y < g.gn.rise-eps) return false;     // must sit at/above deck level
+    const inGN = z < g.gn.len-eps;
+    if(inGN && z+d > g.gn.len+eps) return false;   // can't bridge the deck step
+    if(inGN && y < g.gn.rise-eps) return false;    // must sit at/above deck level
   }
-  // V taper: narrowest at front-most z of the box
-  const wr = availWidthAt(g, z);
+  const wr = availWidthAt(g,z);                    // V-nose taper
   if(x < wr.min-eps || x+w > wr.max+eps) return false;
   const box={x,y,z,w,h,d};
-  // wheel wells are solid obstacles
-  for(const wl of g.wells){
-    if(boxesOverlapXZ(box,wl,0) && boxesOverlapY(box,wl)) return false;
-  }
-  // rear door-frame ledge is a solid obstacle (narrower/shorter opening at the back)
-  if(g.ledges) for(const ob of g.ledges){
-    if(boxesOverlapXZ(box,ob,0) && boxesOverlapY(box,ob)) return false;
-  }
-  // collision with placed cabinets (horizontal clearance gap)
-  for(const p of placed){
-    if(boxesOverlapY(box,p) && boxesOverlapXZ(box,p,gap)) return false;
-  }
-  // support check
+  for(const wl of g.wells)  if(boxesOverlapXZ(box,wl,0) && boxesOverlapY(box,wl)) return false;
+  if(g.ledges) for(const ob of g.ledges) if(boxesOverlapXZ(box,ob,0) && boxesOverlapY(box,ob)) return false;
+
+  const near = idxNear(ix, z-gap-1, z+d+gap+1, _near);
+  for(let i=0;i<near.length;i++){ const p=near[i];
+    if(boxesOverlapY(box,p) && boxesOverlapXZ(box,p,gap)) return false; }
+
+  /* Keep the airspace directly above a face-up cabinet clear, in both
+     directions, so nothing ever comes to rest on its doors. A cabinet loaded
+     face up is always the top of its own column. */
+  for(let i=0;i<near.length;i++){ const p=near[i];
+    if(!isFaceUp(p)) continue;
+    if(y < p.y+p.h+ply+1.0 && y > p.y+p.h-0.6 && boxesOverlapXZ(box,p,0)) return false; }
+  if(cpose==='back' && !flatOnFloorOK(ccls)){
+    for(let i=0;i<near.length;i++){ const p=near[i];
+      if(p.y < y+h+ply+1.0 && p.y > y+h-0.6 && boxesOverlapXZ(box,p,0)) return false; } }
+
   const fy = floorYAt(g,z);
-  if(Math.abs(y-fy) < 0.5) return true; // on the floor / gooseneck deck
-  // else it must rest on a plywood-covered deck of flat cabinets (or wheel wells)
-  // covering >= 60% of its footprint. Plywood raises the support surface by `ply`.
+  if(Math.abs(y-fy) < 0.5) return true;            // on the floor / gooseneck deck
+  /* Otherwise it must land on a plywood-covered deck that carries at least 60%
+     of its footprint. Plywood raises the surface by `ply`. */
   let support=0; const area=w*d;
-  for(const p of placed){
+  for(let i=0;i<near.length;i++){ const p=near[i];
     if(!isSupport(p)) continue;
-    if(Math.abs(p.y+p.h + ply - y) < 0.6){
+    if(Math.abs(p.y+p.h+ply-y) < 1.25){
       const ox=Math.max(0, Math.min(x+w,p.x+p.w)-Math.max(x,p.x));
       const oz=Math.max(0, Math.min(z+d,p.z+p.d)-Math.max(z,p.z));
       support += ox*oz;
-    }
-  }
+    } }
   for(const wl of g.wells){
-    if(Math.abs(wl.y+wl.h - y) < 0.6){
+    if(Math.abs(wl.y+wl.h-y) < 1.25){
       const ox=Math.max(0, Math.min(x+w,wl.x+wl.w)-Math.max(x,wl.x));
       const oz=Math.max(0, Math.min(z+d,wl.z+wl.d)-Math.max(z,wl.z));
       support += ox*oz;
-    }
-  }
+    } }
   return support >= area*0.6;
 }
 
-/* Try to place one cabinet given an ordered list of poses.
-   Scans front->rear, low->high, left->right; returns true when placed. */
-function tryPlace(cab, poses, g, placed, gap, ply, allowStack, standMargin){
-  const STEP = 1.5;
-  for(let z=0; z<=g.totalL+0.01; z+=STEP){
-    const yset=[floorYAt(g,z)];
-    if(allowStack){
-      for(const p of placed){ if(isSupport(p) && p.z < z+120 && p.z+p.d > z-120) yset.push(p.y+p.h+ply); }
-      for(const wl of g.wells){ if(wl.z < z+120 && wl.z+wl.d > z-120) yset.push(wl.h); }
+/* Try to place one piece.  o = { levels:'floor'|'above'|'any', allowStack,
+   standMargin, flatOnFloor }
+
+   Rather than sweeping a blind grid, each piece is tried hard against the front
+   wall, hard against the rear face of whatever is already loaded, flush beside
+   its neighbours and hard against the side walls — plus a coarse grid so
+   awkward gaps still get found. Butting pieces up flush wastes far less room. */
+function tryPlace(cab, cls, poses, g, ix, placed, gap, ply, o){
+  const wantFloor = o.levels!=='above', wantAbove = o.levels!=='floor';
+  const floorFlatOK = o.flatOnFloor || flatOnFloorOK(cls);
+
+  // stacking heights available along each stretch of the trailer, gathered once
+  const lvl={};
+  if(wantAbove && o.allowStack){
+    const add=(z0,z1,v)=>{ const a=Math.floor(z0/BK), b=Math.floor(z1/BK);
+      for(let i=a;i<=b;i++) (lvl[i]=lvl[i]||[]).push(v); };
+    for(const p of placed) if(isSupport(p)) add(p.z, p.z+p.d, Math.round((p.y+p.h+ply)*100)/100);
+    for(const wl of g.wells) add(wl.z, wl.z+wl.d, wl.h);
+  }
+  // candidate distances from the nose
+  const zs=[0];
+  if(g.gn) zs.push(g.gn.len);
+  if(g.taper) zs.push(g.taper.end);
+  for(const p of placed) zs.push(p.z+p.d+gap);
+  for(const wl of g.wells){ zs.push(wl.z+wl.d+gap); zs.push(wl.z-1e-9); }
+  for(let v=0; v<=g.totalL; v+=4) zs.push(v);
+  zs.sort((a,b)=>a-b);
+
+  const maxD = poses.reduce((m,p)=>Math.max(m,p.d),0);
+  const nearBuf=[], ys=[], xs=[];
+  let pz=-99;
+  for(const z of zs){
+    if(z < -0.01 || z > g.totalL-0.01) continue;
+    if(z-pz < 0.24) continue; pz=z;
+    const fy=floorYAt(g,z), wr=availWidthAt(g,z);
+    if(wr.max-wr.min < 1) continue;
+
+    ys.length=0;
+    if(wantFloor) ys.push(fy);
+    if(wantAbove && o.allowStack){
+      const b=Math.floor(z/BK);
+      for(let i=b-1;i<=b+1;i++){ const L=lvl[i]; if(L) for(let j=0;j<L.length;j++) ys.push(L[j]); }
     }
-    const ys=[...new Set(yset.map(v=>Math.round(v*100)/100))].sort((a,b)=>a-b);
+    ys.sort((a,b)=>a-b);
+
+    const near = idxNear(ix, z-gap-1, z+maxD+gap+1, nearBuf);
+    let py=-99;
     for(const y of ys){
-      for(const o of poses){
-        // To stand a cabinet upright you must tip it up from lying flat, and the
-        // far corner sweeps the DIAGONAL of its height×depth face — not just its
-        // height. A 90"-tall × 25"-deep box needs ~sqrt(90²+25²)=93.4" of headroom
-        // to rotate up, so it can't be stood in 91–92". Require that diagonal
-        // (plus a safety margin) to fit between this level and the ceiling.
-        if(o.pose==='upright'){
-          const diag = Math.hypot(cab.h, cab.d);
-          if(g.H - y < diag + standMargin) continue;
+      if(y-py < 0.2) continue; py=y;
+      if(y+1 > g.H) break;
+      const onFloor = Math.abs(y-fy) < 0.5;
+      for(const o2 of poses){
+        if(o2.pose==='back' && onFloor && !floorFlatOK) continue;
+        if(o2.pose==='upright'){
+          /* To stand a cabinet up you tip it from flat, and the far corner sweeps
+             the diagonal of its height x depth face — not just its height. A 90"
+             tall x 25" deep box needs ~93.4" of headroom to rotate up, so it
+             can't be stood in 91-92". */
+          const diag=Math.hypot(cab.h, cab.d);
+          if(g.H-y < diag + o.standMargin) continue;
         }
-        if(z+o.d > g.totalL+0.01) continue;
-        const wr = availWidthAt(g,z);
-        for(let x=Math.max(0,wr.min); x<=g.W-o.w+0.01; x+=STEP){
-          if(canPlace(g, placed, gap, x,y,z,o.w,o.h,o.d, ply)){
-            placed.push({ x,y,z, w:o.w, h:o.h, d:o.d, rot:o.rot, pose:o.pose, cab });
+        if(z+o2.d > g.totalL+0.01) continue;
+        if(y+o2.h > g.H+0.01) continue;
+        if(o2.w > wr.max-wr.min+0.01) continue;
+
+        xs.length=0;
+        xs.push(Math.max(0,wr.min), wr.max-o2.w);
+        for(let i=0;i<near.length;i++){ const p=near[i];
+          if(p.z > z+o2.d+gap || p.z+p.d < z-gap) continue;
+          xs.push(p.x+p.w+gap); xs.push(p.x-o2.w-gap); }
+        for(let v=Math.max(0,wr.min); v<=wr.max-o2.w+0.01; v+=6) xs.push(v);
+        xs.sort((a,b)=>a-b);
+        let px=-99;
+        for(const x of xs){
+          if(x < Math.max(0,wr.min)-0.01 || x > wr.max-o2.w+0.01) continue;
+          if(x-px < 0.24) continue; px=x;
+          if(canPlace(g,ix,gap,x,y,z,o2.w,o2.h,o2.d,ply,o2.pose,cls)){
+            const np={x,y,z,w:o2.w,h:o2.h,d:o2.d,rot:o2.rot,pose:o2.pose,cab,cls};
+            placed.push(np); idxAdd(ix,np);
             return true;
           }
         }
@@ -832,6 +953,62 @@ function tryPlace(cab, poses, g, placed, gap, ply, allowStack, standMargin){
   return false;
 }
 
+/* =================== LOAD STRATEGY ===================
+   1. Fill the trailer floor with base cabinets standing upright. They are the
+      only pieces strong enough to carry several layers, so the bottom deck is
+      built out of them wherever possible — widest first, which puts the heavy
+      pieces up front while the trailer is still empty.
+   2. Whatever floor is left over (usually toward the rear) gets tall and wall
+      cabinets laid on their SIDE, end panel down. The face pointing up is a
+      solid gable, so the next layer can ride on them.
+   3. Everything else goes into the layers above in its preferred pose. A real
+      cabinet is only laid face up once side and upright have both failed, and
+      never on the floor — and nothing is ever stacked on top of it.           */
+function packLoad(cabinets, g, opt){
+  const gap=opt.gap, allowStack=opt.allowStack, ply=allowStack?opt.ply:0;
+  const SC=opt.standMargin, allowBack=opt.allowBack!==false;
+  const placed=[], failed=[], ix=mkIndex();
+  const vol=c=>c.w*c.h*c.d;
+  const byVol =(a,b)=>vol(b.cab)-vol(a.cab);
+  const byWide=(a,b)=>b.cab.w-a.cab.w || vol(b.cab)-vol(a.cab);
+  const all=cabinets.map(c=>({cab:c, cls:cabClass(c)}));
+  const O=(levels,extra)=>Object.assign({levels,allowStack,standMargin:SC},extra||{});
+
+  /* 1 — the bottom deck: base cabinets standing upright on the floor */
+  const spill=[];
+  for(const it of all.filter(i=>i.cls==='base').sort(byWide))
+    if(!tryPlace(it.cab,it.cls,makePoses(it.cab,['upright']),g,ix,placed,gap,ply,O('floor')))
+      spill.push(it);
+
+  /* 2 — remaining floor: tall & wall cabinets on their side */
+  const later=[];
+  for(const it of all.filter(i=>i.cls==='tall'||i.cls==='wall').sort(byVol))
+    if(!tryPlace(it.cab,it.cls,makePoses(it.cab,['side']),g,ix,placed,gap,ply,O('floor')))
+      later.push(it);
+
+  /* 3 — the layers above */
+  const queue=[...spill, ...later,
+               ...all.filter(i=>i.cls!=='base'&&i.cls!=='tall'&&i.cls!=='wall')].sort(byVol);
+  for(const it of queue){
+    const pref=(POSE_ORDER[it.cls]||POSE_ORDER.other).filter(k=>allowBack||k!=='back');
+    const noBack=pref.filter(k=>k!=='back');
+    let ok = tryPlace(it.cab,it.cls,makePoses(it.cab,pref),g,ix,placed,gap,ply,O('above'))
+          || tryPlace(it.cab,it.cls,makePoses(it.cab,noBack.length?noBack:pref),g,ix,placed,gap,ply,O('any'));
+    if(!ok && allowBack)     // last resort: face up, nothing allowed on top of it
+      ok = tryPlace(it.cab,it.cls,makePoses(it.cab,['back','side','upright']),g,ix,placed,gap,ply,
+                    O('any',{flatOnFloor:true}));
+    if(!ok) failed.push(it.cab);
+  }
+
+  /* Load order: finish the deck front-to-rear, then each layer above it. */
+  placed.sort((a,b)=>{
+    const la=Math.abs(a.y-floorYAt(g,a.z))<0.5?0:1, lb=Math.abs(b.y-floorYAt(g,b.z))<0.5?0:1;
+    return (la-lb) || (a.y-b.y) || (a.z-b.z) || (a.x-b.x);
+  });
+  placed.forEach((p,i)=>p.seq=i+1);
+  return {placed, failed};
+}
+
 function optimize(){
   const t = trailers.find(t=>t.id===activeTrailerId);
   if(!t){ alert('Select a trailer first (Trailers tab).'); return; }
@@ -839,56 +1016,12 @@ function optimize(){
   const g = geomOf(t);
   const gap = Math.max(0.25, parseFloat(el('gap').value)||1);
   const allowStack = el('allow-stack').checked;
-  const layFlat   = el('lay-flat')   ? el('lay-flat').checked : true;
-  const allowSide = el('allow-side') ? el('allow-side').checked : false;
+  const allowBack  = el('allow-back') ? el('allow-back').checked : true;
   const ply = allowStack ? Math.max(0, parseFloat(el('plywood') && el('plywood').value)||0) : 0;
-  const standMargin = parseFloat(el('stand-clear') && el('stand-clear').value);
-  const SC = isNaN(standMargin) ? 3 : Math.max(0, standMargin);
-
-  const placed=[], failed=[];
-
-  if(layFlat){
-    /* ---- Phase 1: build the flat bottom deck ----
-       Lay every dominant-depth cabinet on its back on the floor so their tops
-       line up into one flat surface. Plywood is then laid over this deck. */
-    const deckH = dominantDepth(cabinets);
-    const deckCabs = cabinets.filter(c=> Math.abs(c.d-deckH) < 1.01)
-                             .sort((a,b)=> (b.w*b.h*b.d - a.w*a.h*a.d) || (b.w*b.h - a.w*a.h)); // heaviest first -> loaded first, toward the front
-    const rest = cabinets.filter(c=> !(Math.abs(c.d-deckH) < 1.01));
-
-    for(const cab of deckCabs){                         // floor only, no stacking within the deck
-      if(!tryPlace(cab, flatPoses(cab, allowSide), g, placed, gap, ply, false, SC)) rest.push(cab);
-    }
-
-    /* ---- Phase 2: everything else ----
-       Prefer lying flat; stack onto the plywood deck; stand upright only when
-       nothing lies flat and there is headroom to tip it up. */
-    rest.sort((a,b)=> (b.d-a.d) || (b.w*b.h*b.d - a.w*a.h*a.d)); // deepest / biggest first
-    for(const cab of rest){
-      let done = tryPlace(cab, flatPoses(cab, allowSide), g, placed, gap, ply, allowStack, SC);
-      if(!done) done = tryPlace(cab, uprightPoses(cab), g, placed, gap, ply, allowStack, SC);
-      if(!done) failed.push(cab);
-    }
-  } else {
-    /* Lay-flat disabled: single pass, still trying flat before upright. */
-    const units=[...cabinets].sort((a,b)=> (b.h-a.h) || (b.w*b.h*b.d - a.w*a.h*a.d));
-    for(const cab of units){
-      let done = tryPlace(cab, flatPoses(cab, allowSide), g, placed, gap, ply, allowStack, SC);
-      if(!done) done = tryPlace(cab, uprightPoses(cab), g, placed, gap, ply, allowStack, SC);
-      if(!done) failed.push(cab);
-    }
-  }
-
-  // loading sequence: bottom deck first, then (after plywood) the stacked layer;
-  // within each layer, front of trailer first, then left. Heavy pieces sit toward
-  // the front, so they get the lowest numbers and go in while there's most room.
-  placed.sort((a,b)=>{
-    const la = Math.abs(a.y-floorYAt(g,a.z))<0.5 ? 0 : 1;
-    const lb = Math.abs(b.y-floorYAt(g,b.z))<0.5 ? 0 : 1;
-    return (la-lb) || (a.z-b.z) || (a.y-b.y) || (a.x-b.x);
-  });
-  placed.forEach((p,i)=>p.seq=i+1);
-  results = { trailer:t, geom:g, placed, failed, gap, ply };
+  const sm = parseFloat(el('stand-clear') && el('stand-clear').value);
+  const r = packLoad(cabinets, g, { gap, ply, allowStack, allowBack,
+                                    standMargin: isNaN(sm)?3:Math.max(0,sm) });
+  results = { trailer:t, geom:g, placed:r.placed, failed:r.failed, gap, ply };
   saveAll();
   updateStats();
   document.querySelector('[data-tab="tab-3d"]').click();
@@ -905,8 +1038,15 @@ function updateStats(){
   const vol = placed.reduce((a,p)=>a+p.w*p.h*p.d,0);
   const tvol = g.W*g.H*g.totalL;
   el('s-vol').textContent = Math.round(vol/tvol*100)+'%';
-  const farea = placed.filter(p=>Math.abs(p.y-floorYAt(g,p.z))<0.5).reduce((a,p)=>a+p.w*p.d,0);
+  const onFloor = placed.filter(p=>Math.abs(p.y-floorYAt(g,p.z))<0.5);
+  const farea = onFloor.reduce((a,p)=>a+p.w*p.d,0);
   el('s-floor').textContent = Math.round(farea/(g.W*g.totalL)*100)+'%';
+  el('s-deck').textContent = onFloor.filter(p=>p.cls==='base'&&p.pose==='upright').length
+                             + ' of ' + placed.filter(p=>p.cls==='base').length;
+  const tally={};
+  for(const p of placed){ const k=poseText(p); tally[k]=(tally[k]||0)+1; }
+  el('s-poses').innerHTML = Object.keys(tally).sort().map(k=>
+    `<div class="flex justify-between"><span${k.indexOf('FACE UP')===0?' class="text-amber-700 font-semibold"':''}>${k}</span><b>${tally[k]}</b></div>`).join('');
   el('s-faillist').innerHTML = failed.map(c=>`✗ ${c.rc} — ${c.name} (${fmtDim(c.w)}×${fmtDim(c.h)}×${fmtDim(c.d)})`).join('<br>');
   el('seq-list').innerHTML = placed.map(p=>{
     const fromRear = g.totalL-(p.z+p.d);
@@ -914,7 +1054,7 @@ function updateStats(){
     return `<div class="border rounded p-1.5 flex items-center gap-2" style="border-left:4px solid ${roomColor(p.cab)}">
       <b class="text-slate-400">#${p.seq}</b>
       <div><b>${p.cab.rc}</b> ${p.cab.name}${isBulky(p.cab)?' <span class="text-[9px] font-bold text-white bg-orange-500 rounded px-1">2+ ppl</span>':''}<br>
-      <span class="text-slate-500">${fmtDim(p.cab.w)}×${fmtDim(p.cab.h)}×${fmtDim(p.cab.d)} · ${fromRear.toFixed(0)}" from rear · ${p.x.toFixed(0)}" from left${onFloor?'':' · stacked at '+p.y.toFixed(0)+'"'} · <b class="text-slate-600">${poseText(p)}</b>${p.rot?', turned 90°':''}</span></div>
+      <span class="text-slate-500">${fmtDim(p.cab.w)}×${fmtDim(p.cab.h)}×${fmtDim(p.cab.d)} · ${fromRear.toFixed(0)}" from rear · ${p.x.toFixed(0)}" from left${onFloor?'':' · stacked at '+p.y.toFixed(0)+'"'} · <b class="${p.pose==='back'&&p.cls!=='flat'&&p.cls!=='pkg'?'text-amber-700':'text-slate-600'}">${poseText(p)}</b>${p.rot?', turned 90°':''}${isFaceUp(p)?' · <b class="text-amber-700">nothing on top</b>':''}</span></div>
     </div>`;
   }).join('');
 }
@@ -1136,7 +1276,7 @@ function manifestTable(){
       <td>${fmtDim(p.cab.w)} × ${fmtDim(p.cab.h)} × ${fmtDim(p.cab.d)}</td>
       <td>${fmtDim(fromRear)}" fwd of rear doors, ${fmtDim(p.x)}" from left wall</td>
       <td>${level}</td>
-      <td><b>${pose}</b>${p.rot?' · turned 90°':''}${p.cab.fin&&p.cab.fin!=='None'?' · Fin: '+p.cab.fin:''}</td>
+      <td><b>${pose}</b>${p.rot?' · turned 90°':''}${isFaceUp(p)?' <b style="color:#b45309">· DO NOT STACK ON</b>':''}${p.cab.fin&&p.cab.fin!=='None'?' · Fin: '+p.cab.fin:''}</td>
     </tr>`;
   }).join('');
   let failHtml = failed.length? `<h3 style="color:#dc2626;margin-top:14px;font-weight:bold">DID NOT FIT (${failed.length})</h3>
@@ -1148,29 +1288,34 @@ function manifestTable(){
 function loadingOrderHTML(){
   const {geom:g, placed} = results;
   const ply = results.ply || 0;
-  let body='', prevLayer=null;
+  let body='', prevLayer=null, prevY=null;
   for(const p of placed){
     const layer = Math.abs(p.y-floorYAt(g,p.z))<0.5 ? 0 : 1;
     if(prevLayer===0 && layer===1){
       body += `<div style="display:flex;align-items:center;gap:8px;background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;padding:6px 10px;margin:8px 0;font-weight:800;color:#92400e;font-size:12px">
-        ▩ LAY ${fmtDim(ply||0.5)}" PLYWOOD over the whole deck now — then keep loading on top</div>`;
+        &#9641; LAY ${fmtDim(ply||0.5)}" PLYWOOD over the base-cabinet deck now &mdash; then keep loading on top</div>`;
+    } else if(prevY!==null && Math.abs(p.y-prevY)>0.5){
+      body += `<div style="border-top:1px dashed #94a3b8;margin:5px 0 3px;padding-top:2px;font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase">
+        now working at ${fmtDim(p.y)}" off the floor</div>`;
     }
-    prevLayer = layer;
+    prevLayer = layer; prevY = p.y;
     const fromRear = g.totalL-(p.z+p.d);
     const big = isBulky(p.cab);
-    const pose = poseText(p);
-    body += `<div style="display:flex;gap:9px;align-items:center;padding:5px 8px;border-bottom:1px solid #e5e7eb;${big?'background:#fff7ed':''}">
+    const up  = isFaceUp(p);
+    body += `<div style="display:flex;gap:9px;align-items:center;padding:5px 8px;border-bottom:1px solid #e5e7eb;${up?'background:#fffbeb':(big?'background:#fff7ed':'')}">
       <div style="font-weight:800;font-size:14px;min-width:26px;text-align:right;color:#0f172a">${p.seq}</div>
       <div style="width:11px;height:11px;border-radius:2px;background:${roomColor(p.cab)};flex:none"></div>
       <div style="flex:1;line-height:1.25">
         <span style="font-weight:700">${p.cab.rc}</span> ${p.cab.name}
-        ${big?'<span style="background:#ea580c;color:#fff;font-size:9px;font-weight:800;padding:1px 6px;border-radius:8px;margin-left:4px;white-space:nowrap">LARGE · 2+ PEOPLE</span>':''}
-        <div style="font-size:11px;color:#475569">${fmtDim(p.cab.w)}×${fmtDim(p.cab.h)}×${fmtDim(p.cab.d)} · <b>${pose}</b>${p.rot?', turned 90°':''} · ${fmtDim(fromRear)}" from rear doors, ${fmtDim(p.x)}" from left wall</div>
+        ${big?'<span style="background:#ea580c;color:#fff;font-size:9px;font-weight:800;padding:1px 6px;border-radius:8px;margin-left:4px;white-space:nowrap">LARGE &middot; 2+ PEOPLE</span>':''}
+        ${up?'<span style="background:#b45309;color:#fff;font-size:9px;font-weight:800;padding:1px 6px;border-radius:8px;margin-left:4px;white-space:nowrap">FACE UP &middot; NOTHING ON TOP</span>':''}
+        <div style="font-size:11px;color:#475569">${fmtDim(p.cab.w)}&times;${fmtDim(p.cab.h)}&times;${fmtDim(p.cab.d)} &middot; <b>${poseText(p)}</b>${p.rot?', turned 90&deg;':''} &middot; ${fmtDim(fromRear)}" from rear doors, ${fmtDim(p.x)}" from left wall${layer?', sitting '+fmtDim(p.y)+'" up':''}</div>
       </div>
     </div>`;
   }
   const intro = `<div style="font-size:11px;color:#475569;margin-bottom:8px">
-    Load strictly top-to-bottom. The bottom deck goes in first (heavy pieces first, while the trailer is empty and there's the most room to carry them up front), then plywood, then the top layer. Orange rows need a two-person carry.</div>`;
+    Load in strict number order. The bottom deck goes in first &mdash; base cabinets standing upright, widest first, so the heavy pieces are carried in while the trailer is empty and there is the most room to maneuver. Then plywood, then the layers above.
+    Orange rows need a two-person carry. <b>Amber rows are loaded face up: never set anything on them.</b></div>`;
   return intro + `<div style="border:1px solid #cbd5e1;border-radius:8px;overflow:hidden">${body}</div>`;
 }
 function plansHTML(forPrint){
@@ -1187,7 +1332,16 @@ function plansHTML(forPrint){
     </tr></table></div>`;
   const sec = (title,body,brk)=>`<div ${brk&&forPrint?'class="page-break"':''} style="margin-bottom:18px">
     <h2 style="font-size:15px;font-weight:800;background:#f1f5f9;padding:5px 9px;border-left:4px solid #1e3a8a;margin-bottom:8px">${title}</h2>${body}</div>`;
+  const deck = placed.filter(p=>Math.abs(p.y-floorYAt(g,p.z))<0.5);
+  const faceUp = placed.filter(isFaceUp).length;
   let out = hdr;
+  out += `<div style="border:1px solid #cbd5e1;border-left:4px solid #1e3a8a;background:#f8fafc;border-radius:4px;padding:8px 11px;margin-bottom:14px;font-size:11px;color:#334155;line-height:1.45">
+    <b style="font-size:12px">How this load is built</b><br>
+    Bottom deck: <b>${deck.filter(p=>p.cls==='base'&&p.pose==='upright').length} base cabinets standing upright</b> — they carry the layers above.
+    Tall &amp; wall cabinets ride <b>on their side, end panel down</b>, so nothing bears on their doors.
+    ${results.ply?'<b>'+fmtDim(results.ply)+'" plywood</b> goes over the deck before the next layer. ':''}
+    ${faceUp?'<b style="color:#b45309">'+faceUp+' piece'+(faceUp>1?'s':'')+' had to be loaded face up (doors toward the ceiling) — nothing is stacked on '+(faceUp>1?'them':'it')+'.</b>':'<b>No cabinet is loaded face up.</b>'}
+    </div>`;
   out += sec('Floor Plan — floor level (top view, front of trailer at left)', svgFloorplan('floor'));
   if(hasStacked) out += sec('Floor Plan — stacked layer (cabinets loaded on top)', svgFloorplan('stacked'));
   out += sec('Elevation — LEFT side (cabinets on left half)', svgElevation('left'), true);
@@ -1209,7 +1363,7 @@ renderCabs();
 renderTrailers();
 editTrailer(null);
 pullServer();   // then overlay durable settings from the NAS, if available
-['gap','plywood','stand-clear','lay-flat','allow-stack'].forEach(id=>{ const e=el(id); if(e) e.addEventListener('change',saveAll); });
+['gap','plywood','stand-clear','allow-back','allow-stack'].forEach(id=>{ const e=el(id); if(e) e.addEventListener('change',saveAll); });
 el('job-name').addEventListener('change',saveAll);
 initDbDrop();
 el('m-stack').addEventListener('change', ()=>{ stackTouched = true; });
