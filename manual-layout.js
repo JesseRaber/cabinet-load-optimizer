@@ -44,8 +44,8 @@ const POSES = ['back','side','upright'];
 const POSE_SHORT = { back:'BACK', side:'SIDE', upright:'UP' };
 
 /* Which face is down, and therefore which dimension is vertical. Mirrors
-   flatPoses()/uprightPoses() in the app exactly so a hand-placed cabinet and an
-   auto-placed one of the same pose occupy the same box. */
+   makePoses() in the app exactly so a hand-placed cabinet and an auto-placed
+   one of the same pose occupy the same box. */
 function poseBox(cab, pose, rot){
   if(pose==='back') return rot ? {w:cab.h, h:cab.d, d:cab.w} : {w:cab.w, h:cab.d, d:cab.h};
   if(pose==='side') return rot ? {w:cab.d, h:cab.w, d:cab.h} : {w:cab.h, h:cab.w, d:cab.d};
@@ -54,7 +54,7 @@ function poseBox(cab, pose, rot){
 function pinBox(cab){
   const b = poseBox(cab, cab.pin.pose, cab.pin.rot);
   return { x:cab.pin.x, y:cab.pin.y, z:cab.pin.z, w:b.w, h:b.h, d:b.d,
-           pose:cab.pin.pose, rot:cab.pin.rot, cab, pinned:true };
+           pose:cab.pin.pose, rot:cab.pin.rot, cls:cabClass(cab), cab, pinned:true };
 }
 function boxOf(cab){ return results ? results.placed.find(p=>p.cab.id===cab.id) : null; }
 function inTrailer(cab){ return !!boxOf(cab); }
@@ -132,7 +132,7 @@ function resequence(){
   results.placed.sort((a,b)=>{
     const la = Math.abs(a.y-floorYAt(g,a.z))<0.5 ? 0:1;
     const lb = Math.abs(b.y-floorYAt(g,b.z))<0.5 ? 0:1;
-    return (la-lb) || (a.z-b.z) || (a.y-b.y) || (a.x-b.x);
+    return (la-lb) || (a.y-b.y) || (a.z-b.z) || (a.x-b.x);
   });
   results.placed.forEach((p,i)=>p.seq=i+1);
 }
@@ -183,46 +183,28 @@ window.optimize = function(){
 
   const g = geomOf(t), gap = curGap(), ply = curPly(), SC = curSC();
   const allowStack = el('allow-stack').checked;
-  const layFlat    = el('lay-flat') ? el('lay-flat').checked : true;
-  const allowSide  = el('allow-side') ? el('allow-side').checked : false;
+  const allowBack  = el('allow-back') ? el('allow-back').checked : true;
 
-  const placed = [], failed = [], pinIssues = [];
-
-  /* ---- Phase 0: the pins. Seeded straight into `placed`, so every later
-     placement treats them as immovable obstacles (and, when they lie flat, as
-     part of the deck that carries the layer above). ---- */
+  /* ---- Phase 0: the pins. Checked for problems, then handed to the packer as
+     immovable seed boxes so nothing is ever placed through them. ---- */
+  const seed = [], pinIssues = [];
   for(const cab of cabinets){
     if(!cab.pin) continue;
     const p = pinBox(cab);
-    const chk = checkPlace(g, placed, gap, p, ply);
+    const chk = checkPlace(g, seed, gap, p, ply);
     if(!chk.ok){ p.warn = chk.why.join('; '); pinIssues.push({cab, why:chk.why}); }
-    placed.push(p);
-  }
-  const pool = cabinets.filter(c=>!c.pin);
-
-  if(layFlat){
-    const deckH = dominantDepth(cabinets);
-    const deckCabs = pool.filter(c=> Math.abs(c.d-deckH) < 1.01)
-                         .sort((a,b)=> (b.w*b.h*b.d - a.w*a.h*a.d) || (b.w*b.h - a.w*a.h));
-    const rest = pool.filter(c=> !(Math.abs(c.d-deckH) < 1.01));
-    for(const cab of deckCabs)
-      if(!tryPlace(cab, flatPoses(cab, allowSide), g, placed, gap, ply, false, SC)) rest.push(cab);
-    rest.sort((a,b)=> (b.d-a.d) || (b.w*b.h*b.d - a.w*a.h*a.d));
-    for(const cab of rest){
-      let done = tryPlace(cab, flatPoses(cab, allowSide), g, placed, gap, ply, allowStack, SC);
-      if(!done) done = tryPlace(cab, uprightPoses(cab), g, placed, gap, ply, allowStack, SC);
-      if(!done) failed.push(cab);
-    }
-  } else {
-    const units = [...pool].sort((a,b)=> (b.h-a.h) || (b.w*b.h*b.d - a.w*a.h*a.d));
-    for(const cab of units){
-      let done = tryPlace(cab, flatPoses(cab, allowSide), g, placed, gap, ply, allowStack, SC);
-      if(!done) done = tryPlace(cab, uprightPoses(cab), g, placed, gap, ply, allowStack, SC);
-      if(!done) failed.push(cab);
-    }
+    seed.push(p);
   }
 
-  results = { trailer:t, geom:g, placed, failed, gap, ply, pinIssues };
+  /* ---- Everything else: the app's own engine packs around them. packLoad()
+     owns the loading rules -- bases upright on the deck, tall and wall cabinets
+     on their side with the end panel down, panels and trim lying flat in the
+     gaps, a cabinet face up only as a last resort and never with anything on
+     top of it. Those rules live in ONE place. Do not restate them here. ---- */
+  const r = packLoad(cabinets.filter(c=>!c.pin), g,
+                     { gap, ply, allowStack, allowBack, standMargin:SC, seed });
+
+  results = { trailer:t, geom:g, placed:r.placed, failed:r.failed, gap, ply, pinIssues };
   resequence();
   saveAll();
   updateStats();
@@ -231,11 +213,12 @@ window.optimize = function(){
   if(onManual){ renderManual(); draw3D(); }
   else { document.querySelector('[data-tab="tab-3d"]').click(); draw3D(); }
 
+  const nPin = r.placed.filter(p=>p.pinned).length;
   if(pinIssues.length){
     say(`${pinIssues.length} pinned cabinet(s) need a look: ` +
-        pinIssues.map(p=>`${p.cab.rc} (${p.why.join(', ')})`).join(' · '), 'warn');
-  } else if(placed.some(p=>p.pinned)){
-    say(`Packed ${placed.filter(p=>!p.pinned).length} cabinet(s) around ${placed.filter(p=>p.pinned).length} pinned.`, 'ok');
+        pinIssues.map(p=>`${p.cab.rc} (${p.why.join(', ')})`).join(' \u00b7 '), 'warn');
+  } else if(nPin){
+    say(`Packed ${r.placed.length-nPin} cabinet(s) around ${nPin} pinned.`, 'ok');
   }
 };
 
