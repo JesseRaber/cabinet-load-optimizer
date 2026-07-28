@@ -967,7 +967,11 @@ function tryPlace(cab, cls, poses, g, ix, placed, gap, ply, o){
 function packLoad(cabinets, g, opt){
   const gap=opt.gap, allowStack=opt.allowStack, ply=allowStack?opt.ply:0;
   const SC=opt.standMargin, allowBack=opt.allowBack!==false;
-  const placed=[], failed=[], ix=mkIndex();
+const placed=[], failed=[], ix=mkIndex();
+  /* Pre-placed pieces (hand-pinned in the Manual Layout tab). Seeding them here
+     means everything packed below treats them as immovable obstacles and, where
+     their pose allows it, as part of the deck that carries the layer above. */
+  if(opt.seed) for(const p of opt.seed){ placed.push(p); idxAdd(ix,p); }
   const vol=c=>c.w*c.h*c.d;
   const byVol =(a,b)=>vol(b.cab)-vol(a.cab);
   const byWide=(a,b)=>b.cab.w-a.cab.w || vol(b.cab)-vol(a.cab);
