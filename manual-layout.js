@@ -6,16 +6,29 @@
        <script src="manual-layout.js"></script>
 
    What it adds
-     • A "Manual Layout" tab: a top-view plan of the trailer you can drag in.
+     • A "Manual Layout" tab: a top-view plan of the trailer you can drag in,
+       with the live 3D view beside it.
      • Drag a cabinet or package straight out of the list into the trailer.
      • Drag anything already in the trailer to a new spot, rotate it, change how
        it lies, move it up onto the plywood layer.
+     • Click a cabinet in the 3D view to select it, then reorient and move it
+       with the buttons or the keyboard.
+     • Undo and redo, back through every hand placement of this session.
      • Anything you place by hand is PINNED (📌). Pressing Optimize Load packs
        every remaining cabinet around the pinned ones without moving them.
 
+   The 3D view is the app's own scene and renderer, moved between the 3D Load
+   Plan tab and this tab. There is only ever one WebGL context.
+
+   Every hand edit is also announced on the document as a `clo:edit` event, and
+   each optimize run as `clo:optimize`. load-learning.js listens for those to
+   build the tuning suggestions. If that file is absent the events go nowhere
+   and nothing here changes.
+
    Nothing in the original file is deleted — this module replaces optimize(),
-   showTab(), loadingOrderHTML() and decorates draw3D(), renderCabs() and
-   plansHTML() at run time. Delete the script tag to go back to stock.
+   showTab(), resize3D(), loadingOrderHTML() and decorates draw3D(),
+   renderCabs() and plansHTML() at run time. Delete the script tag to go back
+   to stock.
    ============================================================================ */
 'use strict';
 (function(){
@@ -30,8 +43,18 @@ const M = {
   snap: 1, magnet: true, layer: 'all',
   sel: null, drag: null, msg: '', msgKind: 'info',
   pose: 'back', rot: false,        // pose used for the next item off the list
-  svg: null, sc: 1, g: null, t: null
+  svg: null, sc: 1, g: null, t: null,
+  /* 3D: which container the app's renderer is currently sitting in, the
+     pickable cabinet meshes found in it, and one reusable ray. */
+  host3d: 'canvas3d', view: 'both', picks: [], ray: null,
+  /* undo / redo: full snapshots of pins + placement, newest last */
+  undo: [], redo: [], lastPush: 0, lastKey: '',
+  /* what the packer chose on the last run, so an edit can be reported as a
+     change away from the algorithm's own answer rather than from whatever the
+     box happened to be a moment ago */
+  runId: null, baseline: {}, baseFailed: new Set()
 };
+const UNDO_MAX = 60;
 
 /* ============ small helpers ============ */
 const rnd = v => Math.round(v*100)/100;
@@ -140,11 +163,18 @@ function refreshAll(){
   if(results) resequence();
   renderCabs();
   updateStats();
-  draw3D();
+  /* renderManual() first: it mounts the renderer into whichever panel is
+     showing, so the draw below happens at the right size, once. */
   if(!el('tab-manual').classList.contains('hidden')) renderManual();
+  draw3D();
   if(!el('tab-plans').classList.contains('hidden')) renderPlansPreview();
 }
-function commit(cab, box){
+function commit(cab, box, undoKey){
+  const was = boxOf(cab);
+  const from = was ? boxSig(was) : null;
+  pushUndo(from ? `move ${cab.rc}` : `place ${cab.rc}`,
+           undoKey ? cab.id+':'+undoKey : '', cab.id);
+
   cab.pin = { x:rnd(box.x), y:rnd(box.y), z:rnd(box.z), pose:box.pose, rot:box.rot };
   const r = ensureResults();
   r.placed = r.placed.filter(p=>p.cab.id!==cab.id);
@@ -154,11 +184,15 @@ function commit(cab, box){
   if(!chk.ok) p.warn = chk.why.join('; ');
   r.placed.push(p);
   M.sel = { kind:'placed', cab };
+  reportEdit('move', cab, from, boxSig(p));
   say(chk.ok ? `${cab.rc} pinned — ${poseText(p)}${p.rot?', turned 90°':''} at ${fmtDim(r.geom.totalL-(p.z+p.d))}" from the rear doors.`
              : `${cab.rc} pinned, but check it: ${chk.why.join('; ')}.`, chk.ok?'ok':'warn');
   saveAll(); refreshAll();
 }
 function takeOut(cab){                       // back to the list
+  const was = boxOf(cab);
+  pushUndo(`take out ${cab.rc}`, '', cab.id);
+  reportEdit('remove', cab, was ? boxSig(was) : null, null);
   delete cab.pin;
   if(results) results.placed = results.placed.filter(p=>p.cab.id!==cab.id);
   M.sel = null;
@@ -166,12 +200,140 @@ function takeOut(cab){                       // back to the list
   saveAll(); refreshAll();
 }
 function unpin(cab){                         // leave it there, let the packer move it
+  pushUndo(`unpin ${cab.rc}`, '', cab.id);
   delete cab.pin;
   const p = boxOf(cab); if(p){ p.pinned=false; delete p.warn; }
   say(`${cab.rc} unpinned — the optimizer may move it.`);
   saveAll(); refreshAll();
 }
 function say(msg, kind){ M.msg = msg||''; M.msgKind = kind||'info'; const s=el('ml-status'); if(s) paintStatus(s); }
+
+/* ============================================================================
+   UNDO / REDO
+   A snapshot is the whole editable state: which cabinets are pinned and where,
+   plus every box currently in the trailer. Boxes are stored as a cabinet id and
+   a pose, never as width/height/depth, so a restored box is rebuilt through
+   poseBox() and can never disagree with the packer about its own size.
+   ============================================================================ */
+function boxSig(p){
+  const g = (results && results.geom) || M.g;
+  return { x:rnd(p.x), y:rnd(p.y), z:rnd(p.z), pose:p.pose, rot:!!p.rot,
+           layer: (g && Math.abs(p.y-floorYAt(g,p.z))<0.5) ? 'floor' : 'stack' };
+}
+function snapshot(){
+  return {
+    pins: cabinets.filter(c=>c.pin).map(c=>({ id:c.id, pin:Object.assign({}, c.pin) })),
+    placed: results ? results.placed.map(p=>({ id:p.cab.id, x:p.x, y:p.y, z:p.z,
+                                               pose:p.pose, rot:!!p.rot, pinned:!!p.pinned })) : null,
+    failed: results ? (results.failed||[]).map(c=>c.id) : null,
+    sel: M.sel ? M.sel.cab.id : null
+  };
+}
+function restore(s){
+  for(const c of cabinets) if(c.pin) delete c.pin;
+  for(const r of s.pins){ const c = cabinets.find(x=>x.id===r.id); if(c) c.pin = Object.assign({}, r.pin); }
+
+  if(s.placed == null){
+    results = null;
+  } else {
+    const t = activeTrailer(), g = geomOf(t), placed = [];
+    for(const r of s.placed){
+      const cab = cabinets.find(x=>x.id===r.id); if(!cab) continue;   // deleted since
+      const b = poseBox(cab, r.pose, r.rot);
+      placed.push({ x:r.x, y:r.y, z:r.z, w:b.w, h:b.h, d:b.d, pose:r.pose, rot:r.rot,
+                    cls:cabClass(cab), cab, pinned:r.pinned });
+    }
+    const failed = (s.failed||[]).map(id=>cabinets.find(c=>c.id===id)).filter(Boolean);
+    results = { trailer:t, geom:g, placed, failed, gap:curGap(), ply:curPly() };
+    /* re-check every box: a restored layout is only as valid as the current
+       clearance and plywood settings, which may have changed since. */
+    for(const p of placed){
+      delete p.warn;
+      const chk = checkPlace(g, placed.filter(q=>q!==p), curGap(), p, curPly());
+      if(!chk.ok) p.warn = chk.why.join('; ');
+    }
+  }
+
+  M.sel = null;
+  if(s.sel){
+    const c = cabinets.find(x=>x.id===s.sel);
+    if(c) M.sel = { kind: (results && results.placed.some(p=>p.cab.id===c.id)) ? 'placed' : 'list', cab:c };
+  }
+}
+/* Repeated arrow-key nudges on the same cabinet collapse into one undo step so
+   a single button press does not eat the whole history. */
+function pushUndo(label, key, cabId){
+  const now = Date.now();
+  if(key && key===M.lastKey && now-M.lastPush < 1500){ M.lastPush = now; return; }
+  M.undo.push({ label, cabId:cabId||null, state:snapshot() });
+  if(M.undo.length > UNDO_MAX) M.undo.shift();
+  M.redo.length = 0;
+  M.lastPush = now; M.lastKey = key || '';
+  paintUndoBtns();
+}
+function undoLast(){
+  if(!M.undo.length){ say('Nothing left to undo.', 'warn'); return; }
+  const step = M.undo.pop();
+  M.redo.push({ label:step.label, cabId:step.cabId, state:snapshot() });
+  if(M.redo.length > UNDO_MAX) M.redo.shift();
+  restore(step.state);
+  M.lastKey = '';
+  say('Undone: ' + step.label, 'ok');
+  reportUndo(step);
+  saveAll(); refreshAll();
+}
+function redoLast(){
+  if(!M.redo.length){ say('Nothing left to redo.', 'warn'); return; }
+  const step = M.redo.pop();
+  M.undo.push({ label:step.label, cabId:step.cabId, state:snapshot() });
+  restore(step.state);
+  M.lastKey = '';
+  say('Redone: ' + step.label, 'ok');
+  saveAll(); refreshAll();
+}
+/* Undoing one cabinet's move is reported as that cabinet's new state, so the
+   learning log ends up holding what you actually settled on. A bulk undo covers
+   too many cabinets to restate, so it is flagged instead and the tuning page
+   says so. */
+function reportUndo(step){
+  if(step.cabId){
+    const cab = cabinets.find(c=>c.id===step.cabId);
+    if(cab){
+      const now = boxOf(cab);
+      reportEdit(now ? 'move' : 'remove', cab, null, now ? boxSig(now) : null);
+      return;
+    }
+  }
+  emit('clo:undo', { label:step.label, scope:'bulk' });
+}
+function paintUndoBtns(){
+  const u = el('ml-undo'), r = el('ml-redo');
+  if(u){ u.disabled = !M.undo.length; u.classList.toggle('opacity-40', !M.undo.length);
+         u.title = M.undo.length ? 'Undo: ' + M.undo[M.undo.length-1].label : 'Nothing to undo'; }
+  if(r){ r.disabled = !M.redo.length; r.classList.toggle('opacity-40', !M.redo.length);
+         r.title = M.redo.length ? 'Redo: ' + M.redo[M.redo.length-1].label : 'Nothing to redo'; }
+}
+
+/* ============================================================================
+   EDIT LOG FEED
+   Announced, never acted on here. load-learning.js turns these into suggested
+   changes for the loading rules, which you review by hand.
+   ============================================================================ */
+function emit(name, detail){
+  try{ document.dispatchEvent(new CustomEvent(name, { detail })); }catch(e){}
+}
+function reportEdit(action, cab, from, to){
+  const base = M.baseline[cab.id] || null;
+  emit('clo:edit', {
+    runId: M.runId, at: Date.now(),
+    job: el('job-name').value || '', trailerId: activeTrailerId,
+    cabId: cab.id, rc: cab.rc, name: cab.name, cls: cabClass(cab),
+    w: cab.w, h: cab.h, d: cab.d,
+    /* rescued = the packer reported it would not fit, and you fitted it anyway */
+    action: (action==='move' && !base && M.baseFailed.has(cab.id)) ? 'rescue' : action,
+    base, from: from || null, to: to || null
+  });
+}
 
 /* ============================================================================
    OPTIMIZE — pinned cabinets go in first and are never moved
@@ -184,6 +346,7 @@ window.optimize = function(){
   const g = geomOf(t), gap = curGap(), ply = curPly(), SC = curSC();
   const allowStack = el('allow-stack').checked;
   const allowBack  = el('allow-back') ? el('allow-back').checked : true;
+  pushUndo('optimize run');
 
   /* ---- Phase 0: the pins. Checked for problems, then handed to the packer as
      immovable seed boxes so nothing is ever placed through them. ---- */
@@ -209,6 +372,29 @@ window.optimize = function(){
   saveAll();
   updateStats();
 
+  /* ---- Baseline: the answer the algorithm gave, before anybody touched it.
+     Hand-pinned boxes are left out, because the packer did not choose those and
+     moving one later says nothing about the rules. ---- */
+  M.runId = 'r' + Date.now();
+  M.baseline = {};
+  for(const p of r.placed){ if(!p.pinned) M.baseline[p.cab.id] = boxSig(p); }
+  M.baseFailed = new Set(r.failed.map(c=>c.id));
+  emit('clo:optimize', {
+    runId: M.runId, at: Date.now(), job: el('job-name').value || '',
+    trailer: { id:t.id, name:t.name, type:t.type, w:t.w, h:t.h, len:t.len,
+               totalL: Math.round(g.totalL) },
+    opts: { gap, ply, allowStack, allowBack, standMargin:SC },
+    loaded: r.placed.length, pinnedCount: r.placed.filter(p=>p.pinned).length,
+    baseline: Object.keys(M.baseline).reduce((o,id)=>{
+      const p = r.placed.find(q=>q.cab.id===id);
+      o[id] = Object.assign({ rc:p.cab.rc, name:p.cab.name, cls:p.cls || cabClass(p.cab),
+                              w:p.cab.w, h:p.cab.h, d:p.cab.d }, M.baseline[id]);
+      return o;
+    }, {}),
+    failed: r.failed.map(c=>({ cabId:c.id, rc:c.rc, name:c.name, cls:cabClass(c),
+                               w:c.w, h:c.h, d:c.d }))
+  });
+
   const onManual = !el('tab-manual').classList.contains('hidden');
   if(onManual){ renderManual(); draw3D(); }
   else { document.querySelector('[data-tab="tab-3d"]').click(); draw3D(); }
@@ -223,16 +409,123 @@ window.optimize = function(){
 };
 
 /* ============================================================================
+   THE 3D VIEW, SHARED BETWEEN TWO TABS
+   The app builds one scene, one camera and one WebGL renderer bound to
+   #canvas3d. Rather than stand up a second context here, the renderer's canvas
+   element is moved into whichever panel is on screen. OrbitControls stays
+   attached to that same element, so dragging keeps working after a move.
+   ============================================================================ */
+function host3D(){ return el(M.host3d) || el('canvas3d'); }
+
+/* Replaces the app's resize3D so it measures the panel the canvas is actually
+   sitting in. init3D() registers this on window.resize by name, so overriding
+   it before the first init is enough for both paths. */
+window.resize3D = function(){
+  if(!threeReady) return;
+  const c = host3D(); if(!c) return;
+  const w = c.clientWidth, h = c.clientHeight;
+  if(w < 2 || h < 2) return;                  // panel is hidden — leave it alone
+  renderer.setSize(w, h);
+  camera.aspect = w / Math.max(1, h);
+  camera.updateProjectionMatrix();
+};
+function mount3D(id){
+  M.host3d = id;
+  if(!threeReady) init3D();                   // sizes against a hidden div; fixed below
+  const host = el(id);
+  if(!host || !renderer) return;
+  if(renderer.domElement.parentNode !== host) host.appendChild(renderer.domElement);
+  bindPicking();
+  resize3D();
+  requestAnimationFrame(()=>resize3D());      // again once the layout has settled
+}
+
+/* The app's cabinet meshes carry no back-reference to the load, so match them
+   to their boxes by centre point. Both are computed from the same arithmetic in
+   the same order, so the comparison is exact rather than approximate. Trailer
+   parts (gooseneck deck, wheel wells, ledges) match nothing and are skipped. */
+function tagPicks(){
+  M.picks = [];
+  if(!threeReady || !loadGroup || !results) return;
+  const g = results.geom, ox = -g.W/2, oz = -g.totalL/2;
+  const key = (a,b,c) => a.toFixed(2)+'|'+b.toFixed(2)+'|'+c.toFixed(2);
+  const byCentre = new Map();
+  for(const p of results.placed)
+    byCentre.set(key(p.x+p.w/2+ox, p.y+p.h/2, p.z+p.d/2+oz), p);
+  for(const ch of loadGroup.children){
+    if(!ch.isMesh || !ch.geometry || ch.geometry.type !== 'BoxGeometry') continue;
+    const p = byCentre.get(key(ch.position.x, ch.position.y, ch.position.z));
+    if(!p) continue;
+    ch.userData.cid = p.cab.id;
+    M.picks.push(ch);
+  }
+}
+/* Ring the selected cabinet so it is findable from any camera angle: a bright
+   outline plus a post running up to the ceiling. */
+function highlight3D(){
+  if(!threeReady || !loadGroup || !results || !M.sel) return;
+  const p = boxOf(M.sel.cab); if(!p) return;
+  const g = results.geom, ox = -g.W/2, oz = -g.totalL/2;
+  const cx = p.x+p.w/2+ox, cy = p.y+p.h/2, cz = p.z+p.d/2+oz;
+  const geo = new THREE.BoxGeometry(p.w+1.5, p.h+1.5, p.d+1.5);
+  const ring = new THREE.LineSegments(new THREE.EdgesGeometry(geo),
+                 new THREE.LineBasicMaterial({ color:0x2563eb }));
+  ring.position.set(cx, cy, cz);
+  loadGroup.add(ring);
+  geo.dispose();
+  loadGroup.add(new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(cx, p.y+p.h, cz), new THREE.Vector3(cx, g.H, cz)]),
+    new THREE.LineDashedMaterial({ color:0x2563eb })));
+}
+
+/* A press-and-release that did not travel is a click, not an orbit. */
+function bindPicking(){
+  if(!renderer || renderer.domElement.dataset.mlPick) return;
+  const dom = renderer.domElement;
+  dom.dataset.mlPick = '1';
+  let sx = 0, sy = 0, travel = 0, btn = 0;
+  dom.addEventListener('pointerdown', e=>{ sx=e.clientX; sy=e.clientY; travel=0; btn=e.button; });
+  dom.addEventListener('pointermove', e=>{
+    travel = Math.max(travel, Math.abs(e.clientX-sx) + Math.abs(e.clientY-sy)); });
+  dom.addEventListener('pointerup', e=>{
+    if(btn !== 0 || travel > 6) return;       // that was a camera move
+    if(M.host3d !== 'ml-3d') return;          // only the Manual Layout copy selects
+    pick3D(e);
+  });
+}
+function pick3D(evt){
+  if(!results || !M.picks.length) return;
+  const r = renderer.domElement.getBoundingClientRect();
+  const nd = new THREE.Vector2(((evt.clientX-r.left)/r.width)*2 - 1,
+                              -((evt.clientY-r.top)/r.height)*2 + 1);
+  M.ray = M.ray || new THREE.Raycaster();
+  M.ray.setFromCamera(nd, camera);
+  const hits = M.ray.intersectObjects(M.picks, false);
+  if(!hits.length){
+    M.sel = null; say('Nothing there — tap a cabinet to pick it up.');
+    renderCanvas(); renderTools(); renderPalette(); draw3D();
+    return;
+  }
+  const cab = cabinets.find(c=>c.id === hits[0].object.userData.cid);
+  if(!cab) return;
+  M.sel = { kind:'placed', cab };
+  const p = boxOf(cab);
+  say(`${cab.rc} selected — ${poseText(p)}${p.rot?', turned 90°':''}, `
+    + `${fmtDim(M.g.totalL-(p.z+p.d))}" from the rear doors. Use the buttons or arrow keys to move it.`, 'ok');
+  renderCanvas(); renderTools(); renderPalette(); draw3D();
+}
+
+/* ============================================================================
    TAB PLUMBING
    ============================================================================ */
 window.showTab = function(btn){
   document.querySelectorAll('.tabbtn').forEach(b=>b.classList.remove('active'));
   btn.classList.add('active');
-  ['tab-cabinets','tab-trailers','tab-manual','tab-3d','tab-plans'].forEach(t=>{
-    const e = el(t); if(e) e.classList.add('hidden');
-  });
+  /* every tab section, found by id, so a further add-on tab is hidden too */
+  document.querySelectorAll('main > section[id^="tab-"]').forEach(e=>e.classList.add('hidden'));
   el(btn.dataset.tab).classList.remove('hidden');
-  if(btn.dataset.tab==='tab-3d'){ init3D(); resize3D(); }
+  if(btn.dataset.tab==='tab-3d'){ init3D(); mount3D('canvas3d'); }
   if(btn.dataset.tab==='tab-plans'){ renderPlansPreview(); }
   if(btn.dataset.tab==='tab-manual'){ renderManual(); }
 };
@@ -278,6 +571,12 @@ function injectUI(){
                 <option value="floor">Floor / deck only</option>
                 <option value="stack">Stacked layer only</option>
               </select></div>
+            <div class="col-span-2"><span class="lbl">Views</span>
+              <select id="ml-view">
+                <option value="both" selected>3D and top-view plan</option>
+                <option value="3d">3D only</option>
+                <option value="plan">Top-view plan only</option>
+              </select></div>
           </div>
           <label class="text-xs flex items-center gap-1.5"><input type="checkbox" id="ml-magnet" checked class="w-4 h-4">
             Snap up against walls and neighbours</label>
@@ -290,10 +589,22 @@ function injectUI(){
         </div>
       </div>
       <div class="flex-1 min-w-0 space-y-2">
+        <div class="flex items-center gap-1.5 flex-wrap">
+          <button class="btn btn-gray !py-1 !px-2 text-xs" id="ml-undo">↶ Undo</button>
+          <button class="btn btn-gray !py-1 !px-2 text-xs" id="ml-redo">↷ Redo</button>
+          <span class="text-[11px] text-slate-400">Ctrl+Z / Ctrl+Shift+Z</span>
+        </div>
         <div id="ml-status" class="text-xs rounded px-3 py-2"></div>
+        <div id="ml-3d-panel" class="bg-slate-800 rounded-lg overflow-hidden relative" style="height:44vh">
+          <div id="ml-3d" class="w-full h-full"></div>
+          <div class="absolute top-2 left-2 bg-white/90 rounded px-2 py-1 text-[10px] text-slate-600 pointer-events-none">
+            Tap a cabinet to select it · drag to orbit · right-drag to pan · scroll to zoom
+          </div>
+        </div>
         <div id="ml-canvas" class="bg-white rounded-lg shadow p-2 overflow-auto"></div>
         <div class="text-[11px] text-slate-500 leading-relaxed">
-          Top view — front of the trailer at the left, rear doors at the right. Drag a box to move it.
+          Top view — front of the trailer at the left, rear doors at the right. Drag a box to move it,
+          or pick one in the 3D view and move it with the buttons.
           Keys: <b>R</b> turn 90° · <b>P</b> change how it lies · <b>[</b> / <b>]</b> down / up a layer ·
           ← → nudge fore/aft, ↑ ↓ nudge across · <b>Backspace</b> take it back out · <b>Esc</b> deselect.
         </div>
@@ -304,12 +615,17 @@ function injectUI(){
   el('ml-snap').addEventListener('change', e=>{ M.snap = parseFloat(e.target.value); });
   el('ml-layer').addEventListener('change', e=>{ M.layer = e.target.value; renderCanvas(); });
   el('ml-magnet').addEventListener('change', e=>{ M.magnet = e.target.checked; });
+  el('ml-view').addEventListener('change', e=>{ M.view = e.target.value; applyView(true); });
+  el('ml-undo').addEventListener('click', undoLast);
+  el('ml-redo').addEventListener('click', redoLast);
   el('ml-pinall').addEventListener('click', ()=>{
     if(!results) return say('Nothing is loaded yet.', 'warn');
+    pushUndo('pin everything placed');
     let n=0; for(const p of results.placed){ if(!p.cab.pin){ p.cab.pin={x:rnd(p.x),y:rnd(p.y),z:rnd(p.z),pose:p.pose,rot:p.rot}; p.pinned=true; n++; } }
     say(`Pinned ${n} cabinet(s) where they sit.`, 'ok'); saveAll(); refreshAll();
   });
   el('ml-unpinall').addEventListener('click', ()=>{
+    pushUndo('unpin all');
     let n=0; for(const c of cabinets) if(c.pin){ delete c.pin; n++; }
     if(results) results.placed.forEach(p=>{ p.pinned=false; delete p.warn; });
     say(`Unpinned ${n} cabinet(s) — they stay where they are until the next run.`); saveAll(); refreshAll();
@@ -317,11 +633,24 @@ function injectUI(){
   el('ml-clearpins').addEventListener('click', ()=>{
     if(!pinned().length) return say('There are no hand placements.', 'warn');
     if(!confirm('Remove every hand placement? Cabinets go back to being packed automatically.')) return;
+    pushUndo('clear hand placements');
     for(const c of cabinets) if(c.pin) delete c.pin;
     results = null; M.sel = null;
     say('Hand placements cleared. Press Optimize Load to repack.');
     refreshAll();
   });
+  paintUndoBtns();
+}
+
+/* Which of the two views is on screen. Hiding a panel makes its width zero, so
+   the renderer is resized only once its panel is back. */
+function applyView(redraw){
+  const p3 = el('ml-3d-panel'), pp = el('ml-canvas');
+  if(!p3 || !pp) return;
+  p3.classList.toggle('hidden', M.view === 'plan');
+  pp.classList.toggle('hidden', M.view === '3d');
+  p3.style.height = M.view === '3d' ? '72vh' : '44vh';
+  if(M.view !== 'plan'){ mount3D('ml-3d'); if(redraw) draw3D(); }
 }
 
 /* ============================================================================
@@ -333,6 +662,8 @@ function renderManual(){
   ensureResults();
   M.g = results.geom;
   renderPalette(); renderTools(); renderCanvas(); paintStatus(el('ml-status'));
+  paintUndoBtns();
+  applyView();
 }
 
 function renderPalette(){
@@ -379,14 +710,38 @@ function renderTools(){
       ${p && p.warn ? `<br><span class="text-red-600 font-bold">⚠ ${p.warn}</span>` : ''}
     </div>
     <div class="flex flex-wrap gap-1.5">
-      <button class="btn btn-gray !py-1 !px-2 text-xs" data-act="rot">↻ Turn 90°</button>
-      <button class="btn btn-gray !py-1 !px-2 text-xs" data-act="pose">⇅ ${POSE_SHORT[pose]}</button>
-      ${p?`<button class="btn btn-gray !py-1 !px-2 text-xs" data-act="down">↓ layer</button>
-      <button class="btn btn-gray !py-1 !px-2 text-xs" data-act="up">↑ layer</button>
+      <button class="btn btn-gray !py-1 !px-2 text-xs" data-act="rot" title="Swap which way it faces across the trailer">↻ Turn 90°</button>
+      <button class="btn btn-gray !py-1 !px-2 text-xs" data-act="pose" title="Cycle face up → on its side → standing upright">⇅ Lying ${POSE_SHORT[pose]}</button>
+    </div>
+    ${p?`
+    <div class="mt-2 flex items-start gap-3">
+      <div>
+        <span class="lbl">Move by ${fmtDim(M.snap)}"</span>
+        <div class="grid grid-cols-3 gap-1" style="width:7.5rem">
+          <span></span>
+          <button class="btn btn-gray !py-1 !px-0 justify-center text-xs" data-act="toLeft" title="Toward the left wall">↑</button>
+          <span></span>
+          <button class="btn btn-gray !py-1 !px-0 justify-center text-xs" data-act="fwd" title="Toward the front of the trailer">←</button>
+          <span></span>
+          <button class="btn btn-gray !py-1 !px-0 justify-center text-xs" data-act="aft" title="Toward the rear doors">→</button>
+          <span></span>
+          <button class="btn btn-gray !py-1 !px-0 justify-center text-xs" data-act="toRight" title="Toward the right wall">↓</button>
+          <span></span>
+        </div>
+      </div>
+      <div>
+        <span class="lbl">Layer</span>
+        <div class="flex flex-col gap-1">
+          <button class="btn btn-gray !py-1 !px-2 text-xs" data-act="layerUp" title="Up onto the next surface">↑ Up a layer</button>
+          <button class="btn btn-gray !py-1 !px-2 text-xs" data-act="layerDown" title="Down onto the surface below">↓ Down a layer</button>
+        </div>
+      </div>
+    </div>
+    <div class="flex flex-wrap gap-1.5 mt-2 pt-2 border-t">
       ${cab.pin?`<button class="btn btn-gray !py-1 !px-2 text-xs" data-act="unpin">Unpin, leave it</button>`:
                 `<button class="btn btn-blue !py-1 !px-2 text-xs" data-act="pinhere">📌 Pin here</button>`}
-      <button class="btn btn-red !py-1 !px-2 text-xs" data-act="out">Take back out</button>`:''}
-    </div>`;
+      <button class="btn btn-red !py-1 !px-2 text-xs" data-act="out">Take back out</button>
+    </div>`:''}`;
   host.querySelectorAll('[data-act]').forEach(btn=>btn.addEventListener('click', ()=>doAction(btn.dataset.act)));
 }
 
@@ -616,14 +971,18 @@ function doAction(act){
   } else if(!ys.some(y=>Math.abs(y-box.y)<0.6)){
     box.y = ys[0];                        // the surface it was sitting on is gone
   }
-  commit(cab, box);
+  commit(cab, box, n ? 'nudge' : '');
 }
 document.addEventListener('keydown', e=>{
   const t = el('tab-manual');
   if(!t || t.classList.contains('hidden')) return;
   const tag = (e.target.tagName||'').toLowerCase();
   if(tag==='input' || tag==='select' || tag==='textarea') return;
-  if(e.key==='Escape'){ M.sel=null; renderCanvas(); renderTools(); renderPalette(); return; }
+  if((e.ctrlKey||e.metaKey) && (e.key==='z'||e.key==='Z')){
+    e.preventDefault(); e.shiftKey ? redoLast() : undoLast(); return;
+  }
+  if((e.ctrlKey||e.metaKey) && (e.key==='y'||e.key==='Y')){ e.preventDefault(); redoLast(); return; }
+  if(e.key==='Escape'){ M.sel=null; renderCanvas(); renderTools(); renderPalette(); draw3D(); return; }
   if(!M.sel) return;
   const map = { r:'rot', R:'rot', p:'pose', P:'pose', '[':'layerDown', ']':'layerUp',
                 ArrowLeft:'fwd', ArrowRight:'aft', ArrowUp:'toLeft', ArrowDown:'toRight',
@@ -650,6 +1009,9 @@ window.draw3D = function(){
     loadGroup.add(ln);
     geo.dispose();
   }
+  /* tag first, so the outline added below is never itself pickable */
+  tagPicks();
+  highlight3D();
 };
 
 const _renderCabs = window.renderCabs;
