@@ -12,7 +12,7 @@ A browser-based 3D load optimizer for custom cabinet jobs. Load a job, pick a tr
    - **Add an item by hand.** Leave Room/Cab # blank and it's treated as a package — a trim bundle, loose doors, or anything else with no cabinet number.
    - **Import a spreadsheet or CSV**, or paste a table copied off the screen — including a cabinet table copied straight out of Mozaik, which is just the tab-separated case. Reads `.csv`, `.tsv` and `.txt`; comma, semicolon, pipe or tab separated, with quoted fields handled. It works out whether the first row is a header, guesses which column is which, and then *shows you that guess* as a row of dropdowns with a three-row preview, so you can correct anything it got wrong before importing. Separate `Room` and `Cab` columns are combined into `R{room}C{cab}`, and a metric source converts via the **Units** selector (in / mm / cm). Fractions like `34 1/2` are handled everywhere.
 3. On the **Trailers** tab, set the interior dimensions. Gooseneck decks, V-noses, wheel wells and the rear door frame lip are all modelled.
-4. Press **⚙ Optimize Load** in the header. You get the 3D view, the floorplan and both side elevations, the loading order for the crew, and a printable manifest listing each cabinet's room/cabinet number and exact placement.
+4. Press **⚙ Optimize Load** in the header. You get the 3D view, the floorplan, both side elevations, the front and back end views, the loading order for the crew, and a printable manifest listing each cabinet's room/cabinet number and exact placement.
 
 Everything runs client-side. The site is just static files on GitHub Pages — no server required.
 
@@ -39,7 +39,20 @@ The passes, in order:
 
 A cabinet is only stood upright if the diagonal of its height × depth face, plus the stand-up margin, fits under the ceiling — that's the room the far corner needs to sweep as you tip it up.
 
-These rules live in exactly one place: `POSE_ORDER` and `packLoad()` in `cabinet-load-optimizer.html`. Nothing else in the app — including the two add-ons below — changes how a load is packed.
+These rules live in exactly one place: `POSE_ORDER` and `packLoad()` in `cabinet-load-optimizer.html`. Nothing else in the app — including the add-ons below — changes how a load is packed.
+
+## Checking the cross-section — the end views
+
+The floorplan gives you length and width. The side elevations give you length and height. Neither one shows the cross-section, which is where a load actually runs out of room — so the plans include two more drawings, side by side, above the loading order:
+
+- **Front view** — standing at the nose, looking back down the trailer. Draws the raised gooseneck deck where there is one.
+- **Back view** — standing at the rear doors, looking forward. This is what you see the moment the doors open, so it's the one to check the finished load against.
+
+Every piece in the trailer is drawn, in depth order: pieces nearest the end you're looking at are solid, pieces deeper into the load fade back. A cabinet number is printed **only where that cabinet still shows a face** — each box is sampled on a grid and samples covered by a nearer box are thrown out, so a number never floats over the box that's hiding it. Anything unnumbered is buried behind something in front of it, and each view reports how many of the pieces show a face from that end.
+
+The back view overlays the **rear door opening in red dashes**, with the frame insets in grey. A cabinet can clear the interior and still foul the opening, and this is where that shows up. Wheel wells are drawn as dashed ghosts — they sit mid-trailer, not at either end.
+
+**The two views are mirrored.** In the back view the left wall is on your left; in the front view you've turned around, so the same wall is on your right. Both drawings label the walls at the top corners. "Left wall" everywhere else in the app — including every measurement on the manifest — means your left standing at the rear doors looking forward.
 
 ## Placing cabinets by hand — the Manual Layout tab
 
@@ -90,16 +103,18 @@ The log lives in `localStorage` on that one device — the last 25 optimize runs
 - `cabinet-load-optimizer.html` — the app itself: self-contained, with drag-drop `.db` import, spreadsheet/CSV import, manual entry, 3D + 2D views, the packing engine, and the printable manifest.
 - `manual-layout.js` — the Manual Layout tab: hand placement, pinning, the shared 3D view with click-to-select, and undo/redo. Replaces `optimize()`, `showTab()`, `resize3D()` and `loadingOrderHTML()` at run time and decorates `draw3D()`, `renderCabs()` and `plansHTML()`. Deletes nothing.
 - `load-learning.js` — the Tuning tab. Listens for the `clo:optimize` and `clo:edit` events that `manual-layout.js` announces on the document, and turns them into reviewable suggestions.
+- `end-views.js` — the front and back end views described above. Decorates `plansHTML()` to splice the two cross-sections in above the loading order. Reads the finished load and draws it; touches nothing else.
 
-Both add-ons are optional. Remove a `<script>` tag and that feature is gone; the app underneath is untouched.
+The add-ons are all optional. Remove a `<script>` tag and that feature is gone; the app underneath is untouched.
 
 ### Script order
 
-The two add-ons load at the end of `<body>`, in this order — `load-learning.js` wraps `showTab()`, which `manual-layout.js` has already replaced, so it has to come second:
+The add-ons load at the end of `<body>`, in this order — `load-learning.js` wraps `showTab()`, which `manual-layout.js` has already replaced, so it has to come second, and `end-views.js` goes last:
 
 ```html
 <script src="manual-layout.js"></script>
 <script src="load-learning.js"></script>
+<script src="end-views.js"></script>
 ```
 
 If you're serving a copy from somewhere that caches aggressively (a NAS, for instance), add a version query string when you update a file so browsers pick up the new one:
@@ -107,4 +122,5 @@ If you're serving a copy from somewhere that caches aggressively (a NAS, for ins
 ```html
 <script src="manual-layout.js?v=2"></script>
 <script src="load-learning.js?v=1"></script>
+<script src="end-views.js?v=1"></script>
 ```
