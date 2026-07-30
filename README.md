@@ -9,14 +9,16 @@ A browser-based 3D load optimizer for custom cabinet jobs. Load a job, pick a tr
 1. Open the app (link above).
 2. On the **Cabinets** tab, load your cabinets one of three ways:
    - **Drag & drop a Mozaik `JobData.db`** onto the Mozaik panel. The file is read entirely in your browser — nothing is uploaded anywhere — converted from millimeters to inches and rounded to the nearest 1/16".
-   - **Paste the cabinet table straight out of Mozaik.** Tab-separated, columns in this order: Qty, Name, W, H, D, Description, Finished Ends, Room/Cab #. Fractions like `34 1/2` are handled.
    - **Add an item by hand.** Leave Room/Cab # blank and it's treated as a package — a trim bundle, loose doors, or anything else with no cabinet number.
+   - **Import a spreadsheet or CSV**, or paste a table copied off the screen — including a cabinet table copied straight out of Mozaik, which is just the tab-separated case. Reads `.csv`, `.tsv` and `.txt`; comma, semicolon, pipe or tab separated, with quoted fields handled. It works out whether the first row is a header, guesses which column is which, and then *shows you that guess* as a row of dropdowns with a three-row preview, so you can correct anything it got wrong before importing. Separate `Room` and `Cab` columns are combined into `R{room}C{cab}`, and a metric source converts via the **Units** selector (in / mm / cm). Fractions like `34 1/2` are handled everywhere.
 3. On the **Trailers** tab, set the interior dimensions. Gooseneck decks, V-noses, wheel wells and the rear door frame lip are all modelled.
 4. Press **⚙ Optimize Load** in the header. You get the 3D view, the floorplan and both side elevations, the loading order for the crew, and a printable manifest listing each cabinet's room/cabinet number and exact placement.
 
 Everything runs client-side. The site is just static files on GitHub Pages — no server required.
 
 ## How the load is built
+
+A short version of this lives in the app itself, under the collapsible **How the Load Gets Built** panel at the bottom of the Cabinets tab.
 
 Every item is sorted into a kind, and the kind decides how it rides:
 
@@ -85,7 +87,7 @@ The log lives in `localStorage` on that one device — the last 25 optimize runs
 ## Files
 
 - `index.html` — a tiny redirect so the Pages root URL opens the app.
-- `cabinet-load-optimizer.html` — the app itself: self-contained, with drag-drop `.db` import, paste and manual import, 3D + 2D views, the packing engine, and the printable manifest.
+- `cabinet-load-optimizer.html` — the app itself: self-contained, with drag-drop `.db` import, spreadsheet/CSV import, manual entry, 3D + 2D views, the packing engine, and the printable manifest.
 - `manual-layout.js` — the Manual Layout tab: hand placement, pinning, the shared 3D view with click-to-select, and undo/redo. Replaces `optimize()`, `showTab()`, `resize3D()` and `loadingOrderHTML()` at run time and decorates `draw3D()`, `renderCabs()` and `plansHTML()`. Deletes nothing.
 - `load-learning.js` — the Tuning tab. Listens for the `clo:optimize` and `clo:edit` events that `manual-layout.js` announces on the document, and turns them into reviewable suggestions.
 
