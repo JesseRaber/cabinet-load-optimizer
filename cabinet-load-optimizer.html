@@ -21,6 +21,12 @@
   .btn-green { background:#059669; color:#fff; } .btn-green:hover { background:#047857; }
   .btn-gray { background:#e2e8f0; color:#334155; } .btn-gray:hover { background:#cbd5e1; }
   .btn-red { background:#fee2e2; color:#b91c1c; } .btn-red:hover { background:#fecaca; }
+  /* Collapsible side panels: reference material that shouldn't crowd the page. */
+  details.fold > summary { cursor:pointer; list-style:none; display:flex; align-items:center; justify-content:space-between; gap:.5rem; }
+  details.fold > summary::-webkit-details-marker { display:none; }
+  details.fold > summary::after { content:'\25BE'; color:#94a3b8; font-size:.85rem; line-height:1; transition:transform .15s; }
+  details.fold[open] > summary::after { transform:rotate(180deg); }
+  details.fold > summary:hover::after { color:#475569; }
   table.grid { width:100%; border-collapse:collapse; font-size:.8rem; }
   table.grid th { background:#f1f5f9; text-align:left; padding:.4rem .5rem; border:1px solid #e2e8f0; font-size:.7rem; text-transform:uppercase; color:#475569; }
   table.grid td { padding:.35rem .5rem; border:1px solid #e2e8f0; }
@@ -96,30 +102,10 @@
             <div id="db-msg" class="text-xs mt-2"></div>
           </div>
           <div class="bg-white rounded-lg shadow p-4">
-            <h2 class="font-bold text-sm mb-1">Paste from Mozaik</h2>
-            <p class="text-xs text-slate-500 mb-2">Copy the cabinet table from Mozaik and paste below. Columns: Qty, Name, W, H, D, Description, Finished Ends, Room/Cab #. Fractions like <b>34 1/2</b> are handled.</p>
-            <textarea id="mozaik-paste" rows="8" class="font-mono !text-xs" placeholder="1	90° Base Corner	36	34 1/2	36	Base - Corner 90°	None	R1C3"></textarea>
-            <div class="flex gap-2 mt-2">
-              <button class="btn btn-blue flex-1 justify-center" onclick="importMozaik()">Import</button>
-              <button class="btn btn-gray" onclick="loadSample()">Sample</button>
-            </div>
-            <div id="import-msg" class="text-xs mt-2"></div>
-          </div>
-          <div class="bg-white rounded-lg shadow p-4">
-            <h2 class="font-bold text-sm mb-2">How the Load Gets Built</h2>
-            <ol class="text-xs text-slate-600 space-y-1.5 list-decimal pl-4">
-              <li><b>Floor = base cabinets, standing upright.</b> They're the only pieces strong enough to carry several layers, so the bottom deck is filled with them first — widest first, so the heavy ones land up front.</li>
-              <li><b>Leftover floor = tall &amp; wall cabinets on their side</b>, end panel down. The face pointing up is a solid gable, so the next layer can ride on them.</li>
-              <li><b>Plywood over the deck</b>, then the upper layers go on.</li>
-              <li><b>Face up is the last resort.</b> A cabinet is only laid doors-up when it won't go on its side or upright — never on the floor, and nothing is ever stacked on top of it.</li>
-              <li><b>Panels, fillers and trim</b> lie flat and fill the gaps between layers.</li>
-            </ol>
-          </div>
-          <div class="bg-white rounded-lg shadow p-4">
             <h2 class="font-bold text-sm mb-2">Add Cabinet or Package Manually</h2>
             <div class="grid grid-cols-2 gap-2">
               <div class="col-span-2"><span class="lbl">Name</span><input id="m-name" type="text" placeholder="Custom Base Cab"></div>
-              <div><span class="lbl">Room/Cab #</span><input id="m-rc" type="text" placeholder="R1C4 — blank = package"></div>
+              <div><span class="lbl">Room/Cab #</span><input id="m-rc" type="text" placeholder="R1C4 &mdash; blank = package"></div>
               <div><span class="lbl">Package #</span><input id="m-pkg" type="number" min="1" step="1" placeholder="optional"></div>
               <div><span class="lbl">Qty</span><input id="m-qty" type="number" value="1" min="1"></div>
               <div><span class="lbl">Width"</span><input id="m-w" type="text" placeholder='24 or 34 1/2'></div>
@@ -130,6 +116,40 @@
             <div class="text-[10px] text-slate-400 mt-1.5">Leave Room/Cab # blank for trim bundles, loose doors and other packages.</div>
             <button class="btn btn-blue w-full justify-center mt-3" onclick="addManual()">Add Item</button>
           </div>
+
+          <details class="bg-white rounded-lg shadow p-4 fold" id="csv-card">
+            <summary class="font-bold text-sm">Import Spreadsheet or CSV</summary>
+            <div class="mt-3">
+              <p class="text-xs text-slate-500 mb-2">For cabinet lists out of other software, or a table copied off the screen. Reads <b>.csv</b>, <b>.tsv</b> and <b>.txt</b> &mdash; comma, semicolon, pipe or tab separated. Columns are matched automatically and you can correct them before importing.</p>
+              <input type="file" id="csv-file" accept=".csv,.tsv,.tab,.txt" class="hidden">
+              <div id="csv-drop" onclick="el('csv-file').click()"
+                   class="border-2 border-dashed border-slate-300 rounded-lg px-3 py-4 text-center cursor-pointer bg-slate-50 hover:bg-slate-100 hover:border-slate-500 transition-colors">
+                <svg class="w-6 h-6 mx-auto text-slate-400 mb-1" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h5"/>
+                </svg>
+                <div class="text-xs font-bold text-slate-700">Click to choose, or drop a spreadsheet here</div>
+              </div>
+              <div class="text-[10px] uppercase font-bold text-slate-400 mt-3 mb-1">or paste rows</div>
+              <textarea id="csv-paste" rows="5" class="font-mono !text-xs" placeholder="Qty, Name, Width, Height, Depth, Description, Ends, Room/Cab"></textarea>
+              <div class="flex gap-2 mt-2">
+                <button class="btn btn-gray flex-1 justify-center !py-1.5 !text-xs" onclick="readCsvText(el('csv-paste').value,'pasted rows')">Read Pasted Rows</button>
+                <button class="btn btn-gray !py-1.5 !text-xs" onclick="loadSample()">Sample</button>
+              </div>
+              <div id="csv-map" class="hidden mt-3 pt-3 border-t border-slate-200"></div>
+              <div id="csv-msg" class="text-xs mt-2"></div>
+            </div>
+          </details>
+
+          <details class="bg-white rounded-lg shadow p-4 fold">
+            <summary class="font-bold text-sm">How the Load Gets Built</summary>
+            <ol class="text-xs text-slate-600 space-y-1.5 list-decimal pl-4 mt-3">
+              <li><b>Floor = base cabinets, standing upright.</b> They're the only pieces strong enough to carry several layers, so the bottom deck is filled with them first &mdash; widest first, so the heavy ones land up front.</li>
+              <li><b>Leftover floor = tall &amp; wall cabinets on their side</b>, end panel down. The face pointing up is a solid gable, so the next layer can ride on them.</li>
+              <li><b>Plywood over the deck</b>, then the upper layers go on.</li>
+              <li><b>Face up is the last resort.</b> A cabinet is only laid doors-up when it won't go on its side or upright &mdash; never on the floor, and nothing is ever stacked on top of it.</li>
+              <li><b>Panels, fillers and trim</b> lie flat and fill the gaps between layers.</li>
+            </ol>
+          </details>
         </div>
         <div class="lg:col-span-2">
           <div class="bg-white rounded-lg shadow p-4">
@@ -384,36 +404,235 @@ function parseDim(s){
   if(m[2] && m[3] && parseFloat(m[3])!==0) v += parseFloat(m[2])/parseFloat(m[3]);
   return v;
 }
-function parseMozaik(text){
+/* =================== DELIMITED IMPORT (CSV / TSV / paste) ===================
+   One generic reader for cabinet lists out of any software. It sniffs the
+   delimiter, works out whether row 1 is a header, guesses which column is which,
+   and then shows that guess so it can be corrected before anything is imported.
+   A Mozaik table copied off the screen is just the tab-separated case.          */
+function sniffDelim(text){
+  const line = text.split(/\r?\n/).find(l=>l.trim()) || '';
+  if(line.includes('\t')) return '\t';
+  const cnt={',':0,';':0,'|':0}; let inQ=false;
+  for(const ch of line){
+    if(ch==='"') inQ=!inQ;
+    else if(!inQ && cnt[ch]!==undefined) cnt[ch]++;
+  }
+  let best=null,n=0; for(const k in cnt) if(cnt[k]>n){ n=cnt[k]; best=k; }
+  return best || 'SP';              // no delimiter found: fall back to 2+ spaces
+}
+function splitLine(line, delim){
+  if(delim==='SP') return line.split(/\s{2,}/);
+  const out=[]; let cur='', inQ=false;                 // quoted fields may hold the delimiter
+  for(let i=0;i<line.length;i++){
+    const ch=line[i];
+    if(inQ){
+      if(ch==='"'){ if(line[i+1]==='"'){ cur+='"'; i++; } else inQ=false; }
+      else cur+=ch;
+    } else if(ch==='"') inQ=true;
+    else if(ch===delim){ out.push(cur); cur=''; }
+    else cur+=ch;
+  }
+  out.push(cur); return out;
+}
+function parseDelimited(text){
+  const d=sniffDelim(text);
+  return text.split(/\r?\n/).filter(l=>l.trim()).map(l=>splitLine(l,d).map(c=>c.trim()));
+}
+const CSV_FIELDS=[
+  ['qty','Qty',['qty','quantity','quan','qnty','count','ea','each','pcs','pieces']],
+  ['name','Name',['name','cabinet','cabinetname','cabname','item','itemname','part','partname','product','style']],
+  ['w','Width',['w','width','wide','widthin','cabinetwidth','wid']],
+  ['h','Height',['h','height','high','heightin','cabinetheight','hgt']],
+  ['d','Depth',['d','depth','deep','depthin','cabinetdepth','dep']],
+  ['desc','Description',['desc','description','type','notes','note','comment','comments','category','roomname']],
+  ['fin','Finished Ends',['fin','finends','finishedends','finishends','ends','exposedends','finishedend']],
+  ['rc','Room/Cab #',['rc','roomcab','roomcabno','roomcabnumber','label','tag','mark','id','ident','location','loc','position','itemno']],
+  ['room','Room #',['room','roomno','roomnumber','rm']],
+  ['cab','Cab #',['cab','cabno','cabnumber','cabinetno','cabinetnumber']],
+];
+const csvNorm = s => (''+s).toLowerCase().replace(/[^a-z0-9]/g,'');
+const RC_RE = /^[a-z]*\d+[.\-_\s]*c\s*\d+/i;
+
+function guessMap(rows){
+  const map={}; if(!rows.length) return {map,hasHeader:false};
+  const head=rows[0].map(csvNorm); const named={}; let hits=0;
+  head.forEach((cell,i)=>{
+    for(const [key,,syn] of CSV_FIELDS){
+      if(syn.includes(cell)){ if(named[key]===undefined){ named[key]=i; hits++; } break; }
+    }
+  });
+  /* A first row naming 2+ known fields is a header. So is a first row with no
+     numbers in it at all while the rows beneath it have them — the labels just
+     aren't ones we recognise, so the columns get guessed positionally instead. */
+  const noNums = rows[0].every(c=>isNaN(parseDim(c)));
+  const hasHeader = hits>=2 || (noNums && rows.length>1);
+  if(hits>=2) Object.assign(map,named);
+  const body = hasHeader ? rows.slice(1) : rows;
+
+  if(body.length && (map.w===undefined||map.h===undefined||map.d===undefined)){
+    const taken=new Set(Object.values(map));
+    const nCols=Math.max(...body.map(r=>r.length));
+    const free=i=>!taken.has(i);
+    const isDim=i=>body.every(r=>!isNaN(parseDim(r[i]||'')));
+    const dims=[]; for(let i=0;i<nCols;i++) if(isDim(i)&&free(i)) dims.push(i);
+    let run=[];                                   // first 3 adjacent number columns = W,H,D
+    for(let i=0;i<dims.length;i++){
+      if(run.length && dims[i]!==run[run.length-1]+1) run=[];
+      run.push(dims[i]);
+      if(run.length===3) break;
+    }
+    if(run.length===3){
+      map.w=run[0]; map.h=run[1]; map.d=run[2]; run.forEach(i=>taken.add(i));
+      if(map.qty===undefined) for(let i=run[0]-1;i>=0;i--)
+        if(free(i)&&body.every(r=>/^\d+$/.test((r[i]||'').trim()))){ map.qty=i; taken.add(i); break; }
+      if(map.name===undefined) for(let i=run[0]-1;i>=0;i--)
+        if(free(i)&&body.some(r=>(r[i]||'').trim()&&isNaN(parseDim(r[i])))){ map.name=i; taken.add(i); break; }
+      const after=[]; for(let i=run[2]+1;i<nCols;i++) if(free(i)) after.push(i);
+      ['desc','fin','rc'].forEach((k,n)=>{
+        if(map[k]===undefined&&after[n]!==undefined){ map[k]=after[n]; taken.add(after[n]); } });
+    }
+  }
+  if(body.length){                       // a column of R#C# labels is the Room/Cab #, wherever it sits
+    const nCols=Math.max(...body.map(r=>r.length));
+    for(let i=0;i<nCols;i++){
+      const vals=body.map(r=>(r[i]||'').trim()).filter(Boolean);
+      if(vals.length && vals.filter(v=>RC_RE.test(v)).length/vals.length>=0.7){ map.rc=i; break; }
+    }
+  }
+  const seen={};                                        // no two fields on one column
+  for(const k of ['rc','w','h','d','qty','name','fin','desc','room','cab']){
+    if(map[k]===undefined) continue;
+    if(seen[map[k]]!==undefined) delete map[k]; else seen[map[k]]=k;
+  }
+  return {map, hasHeader};
+}
+/* Turns the raw grid + column map into cabinet rows. `scale` converts the source
+   units to inches; everything is snapped to 1/16" the same way the .db import does. */
+function buildCsvRows(rows, map, hasHeader, scale){
+  const body = hasHeader ? rows.slice(1) : rows;
+  const g=(r,k)=> map[k]!==undefined ? (r[map[k]]||'').trim() : '';
   const out=[], errs=[];
-  text.split(/\r?\n/).forEach((line,i)=>{
-    if(!line.trim()) return;
-    let cols = line.includes('\t') ? line.split('\t') : line.split(/\s{2,}/);
-    cols = cols.map(c=>c.trim());
-    if(cols.length < 5){ errs.push(`Line ${i+1}: needs at least Qty, Name, W, H, D`); return; }
-    const qty = parseInt(cols[0])||1;
-    const w=parseDim(cols[2]), h=parseDim(cols[3]), d=parseDim(cols[4]);
-    if(isNaN(w)||isNaN(h)||isNaN(d)){ errs.push(`Line ${i+1}: couldn't read dimensions`); return; }
-    out.push({ qty, name:cols[1]||'Cabinet', w, h, d, desc:cols[5]||'', fin:cols[6]||'', rc:cols[7]||('CAB'+(i+1)) });
+  body.forEach((r,i)=>{
+    if(!r.some(c=>c)) return;
+    const rowNo = i+1+(hasHeader?1:0);
+    const w=frac16(parseDim(g(r,'w'))*scale), h=frac16(parseDim(g(r,'h'))*scale), d=frac16(parseDim(g(r,'d'))*scale);
+    if(isNaN(w)||isNaN(h)||isNaN(d)||w<=0||h<=0||d<=0){ errs.push(`Row ${rowNo}: could not read W / H / D`); return; }
+    let rc=g(r,'rc');
+    if(!rc && (map.room!==undefined||map.cab!==undefined)){
+      const rm=g(r,'room'), cb=g(r,'cab');
+      if(rm||cb) rc='R'+(rm||'1')+'C'+(cb||(i+1));
+    }
+    const nm=g(r,'name'), dsc=g(r,'desc');
+    const name = nm || dsc || 'Cabinet';
+    out.push({ qty: parseInt(g(r,'qty'),10)||1, name, w, h, d,
+               desc: (dsc===name? '' : dsc), fin:g(r,'fin'), rc: rc || ('CAB'+rowNo) });
   });
   return {rows:out, errs};
 }
-function importMozaik(){
-  const {rows, errs} = parseMozaik(el('mozaik-paste').value);
+
+let csvState = null;      // { grid, map, hasHeader, scale, source }
+/* Resolved lazily: MM_TO_IN is declared further down the file. */
+const csvScale = u => u==='mm' ? MM_TO_IN : u==='cm' ? 10*MM_TO_IN : 1;
+
+function csvMsg(html, kind){
+  el('csv-msg').innerHTML = kind==='error' ? `<span class="text-red-600 font-bold">${html}</span>`
+                          : kind==='ok'    ? `<span class="text-emerald-600 font-bold">${html}</span>`
+                          : `<span class="text-slate-500">${html}</span>`;
+}
+function readCsvText(text, source){
+  el('csv-map').classList.add('hidden'); csvState=null;
+  if(!text || !text.trim()){ csvMsg('Nothing to read — paste some rows or pick a file.','error'); return; }
+  const grid = parseDelimited(text);
+  if(!grid.length){ csvMsg('No rows found in that file.','error'); return; }
+  const {map, hasHeader} = guessMap(grid);
+  csvState = { grid, map, hasHeader, scale:'in', source: source||'file' };
+  csvMsg('');
+  renderCsvMap();
+}
+function renderCsvMap(){
+  if(!csvState) return;
+  const {grid, map, hasHeader} = csvState;
+  const nCols = Math.max(...grid.map(r=>r.length));
+  const label = i => hasHeader ? (grid[0][i]||'').trim() || `Column ${i+1}` : `Column ${i+1}`;
+  const opts = sel => `<option value="">&mdash; none &mdash;</option>` +
+    Array.from({length:nCols},(_,i)=>`<option value="${i}" ${sel===i?'selected':''}>${i+1}. ${label(i)}</option>`).join('');
+
+  const body = hasHeader? grid.slice(1) : grid;
+  const {rows:preview, errs} = buildCsvRows(grid, map, hasHeader, csvScale(csvState.scale));
+
+  const fieldRows = CSV_FIELDS.filter(f=>!(f[0]==='room'||f[0]==='cab') || map[f[0]]!==undefined)
+    .map(([key,name])=>`<div class="flex items-center gap-1.5">
+        <span class="text-[10px] font-bold uppercase text-slate-500 w-24 shrink-0">${name}</span>
+        <select class="!text-xs !py-1" onchange="setCsvMap('${key}', this.value)">${opts(map[key])}</select>
+      </div>`).join('');
+
+  const prevRows = preview.slice(0,3).map(r=>`<tr>
+      <td>${r.rc}</td><td>${r.name}</td><td>${fmtDim(r.w)}</td><td>${fmtDim(r.h)}</td><td>${fmtDim(r.d)}</td></tr>`).join('');
+
+  el('csv-map').innerHTML = `
+    <div class="flex items-baseline justify-between mb-2">
+      <div class="text-xs font-bold">${body.length} row(s) read${hasHeader?' <span class="font-normal text-slate-400">· header detected</span>':''}</div>
+      <label class="text-[10px] uppercase font-bold text-slate-500 flex items-center gap-1">Units
+        <select class="!text-xs !py-0.5 !w-16" onchange="csvState.scale=this.value; renderCsvMap()">
+          ${['in','mm','cm'].map(u=>`<option value="${u}" ${csvState.scale===u?'selected':''}>${u}</option>`).join('')}
+        </select>
+      </label>
+    </div>
+    <div class="space-y-1">${fieldRows}</div>
+    ${preview.length? `<div class="mt-2 overflow-auto"><table class="grid"><thead><tr>
+        <th>Room/Cab</th><th>Name</th><th>W"</th><th>H"</th><th>D"</th></tr></thead>
+        <tbody>${prevRows}</tbody></table>
+        ${preview.length>3? `<div class="text-[10px] text-slate-400 mt-1">…and ${preview.length-3} more</div>`:''}</div>` : ''}
+    ${errs.length? `<div class="text-[11px] text-amber-600 mt-2">${errs.slice(0,5).join('<br>')}${errs.length>5?`<br>…and ${errs.length-5} more`:''}</div>`:''}
+    <button class="btn btn-blue w-full justify-center mt-3 !py-1.5 !text-xs" ${preview.length?'':'disabled style="opacity:.5;cursor:not-allowed"'}
+            onclick="commitCsvImport()">Import ${preview.length} row(s)</button>`;
+  el('csv-map').classList.remove('hidden');
+}
+function setCsvMap(key, val){
+  if(!csvState) return;
+  if(val==='') delete csvState.map[key];
+  else {
+    const i=parseInt(val,10);
+    for(const k in csvState.map) if(csvState.map[k]===i && k!==key) delete csvState.map[k];
+    csvState.map[key]=i;
+  }
+  renderCsvMap();
+}
+function commitCsvImport(){
+  if(!csvState) return;
+  const {rows, errs} = buildCsvRows(csvState.grid, csvState.map, csvState.hasHeader, csvScale(csvState.scale));
   let added=0;
   rows.forEach(r=>{
     for(let q=0;q<r.qty;q++){
       cabinets.push({ id:'c'+Date.now()+'_'+Math.random().toString(36).slice(2,6),
         rc: r.qty>1 ? r.rc+'.'+(q+1) : r.rc,
         name:r.name, w:r.w, h:r.h, d:r.d, desc:r.desc, fin:r.fin,
-        stackOn: r.h <= 45 }); // bases & uppers can hold weight; talls can't by default
+        stackOn: r.h <= 45 });     // bases & uppers can hold weight; talls can't by default
       added++;
     }
   });
-  el('import-msg').innerHTML = `<span class="text-emerald-600 font-bold">Imported ${added} cabinet(s).</span>` +
-    (errs.length? `<div class="text-red-600 mt-1">${errs.join('<br>')}</div>`:'');
-  if(added) el('mozaik-paste').value='';
+  el('csv-map').classList.add('hidden'); csvState=null;
+  el('csv-paste').value='';
+  csvMsg(`Imported ${added} cabinet(s).` + (errs.length? ` <span class="text-amber-600 font-normal">${errs.length} row(s) skipped.</span>`:''), 'ok');
   renderCabs(); saveAll();
+}
+function readCsvFile(file){
+  if(!file) return;
+  csvMsg(`Reading ${file.name}\u2026`,'busy');
+  const fr=new FileReader();
+  fr.onload = () => readCsvText(fr.result, file.name);
+  fr.onerror = () => csvMsg('Could not read that file.','error');
+  fr.readAsText(file);
+}
+function initCsvDrop(){
+  const input=el('csv-file'), drop=el('csv-drop');
+  if(!input||!drop) return;
+  input.addEventListener('change', e=>{ readCsvFile(e.target.files[0]); e.target.value=''; });
+  ['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev, e=>{
+    e.preventDefault(); drop.classList.add('bg-slate-200','border-slate-600'); }));
+  ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev, e=>{
+    e.preventDefault(); drop.classList.remove('bg-slate-200','border-slate-600'); }));
+  drop.addEventListener('drop', e=>readCsvFile(e.dataTransfer.files[0]));
 }
 /* =================== JobData.db IMPORT =================== */
 const MM_TO_IN = 1/25.4;
@@ -504,7 +723,9 @@ function initDbDrop(){
 }
 
 function loadSample(){
-  el('mozaik-paste').value = "1\t90° Base Corner\t36\t34 1/2\t36\tBase - Corner 90°\tNone\tR1C3\n1\tCustom Base Cab\t72 1/4\t34 1/2\t24\tCustomized Base Cabinet\tNone\tR1C2\n1\tCustom Base Cab\t53\t34 1/2\t24\tCustomized Base Cabinet\tNone\tR1C1\n2\tWall Cab\t30\t30\t12\tWall Cabinet\tNone\tR1C4\n1\tTall Pantry\t24\t84\t24\tPantry\tLeft\tR1C5";
+  const sample = "1\t90\u00b0 Base Corner\t36\t34 1/2\t36\tBase - Corner 90\u00b0\tNone\tR1C3\n1\tCustom Base Cab\t72 1/4\t34 1/2\t24\tCustomized Base Cabinet\tNone\tR1C2\n1\tCustom Base Cab\t53\t34 1/2\t24\tCustomized Base Cabinet\tNone\tR1C1\n2\tWall Cab\t30\t30\t12\tWall Cabinet\tNone\tR1C4\n1\tTall Pantry\t24\t84\t24\tPantry\tLeft\tR1C5";
+  el('csv-paste').value = sample;
+  readCsvText(sample, 'sample');
 }
 /* Packages default to NOT supporting a stack on top, cabinets do. `stackTouched`
    keeps an explicit tick of the box from being overwritten while typing. */
@@ -1370,6 +1591,7 @@ pullServer();   // then overlay durable settings from the NAS, if available
 ['gap','plywood','stand-clear','allow-back','allow-stack'].forEach(id=>{ const e=el(id); if(e) e.addEventListener('change',saveAll); });
 el('job-name').addEventListener('change',saveAll);
 initDbDrop();
+initCsvDrop();
 el('m-stack').addEventListener('change', ()=>{ stackTouched = true; });
 el('m-rc').addEventListener('input', syncStackDefault);
 syncStackDefault();
