@@ -116,7 +116,7 @@ function endView(which){
   let shown = 0;
   items.forEach((p,i) => {
     const c = roomColor(p.cab);
-    const t = g.totalL > 0 ? Math.min(1, dist(p)/g.totalL) : 0;
+    const t = g.totalL > 0 ? Math.max(0, Math.min(1, dist(p)/g.totalL)) : 0;
     const fo = NEAR_FILL - (NEAR_FILL-FAR_FILL)*t;
     s += `<rect x="${r1(boxL(p.x,p.w))}" y="${r1(sy(p.y+p.h))}" width="${r1(p.w*sc)}" height="${r1(p.h*sc)}" fill="${c}" fill-opacity="${fo.toFixed(2)}" stroke="${c}" stroke-width="1.2" stroke-opacity="${(0.35+0.55*(1-t)).toFixed(2)}"/>`;
 
@@ -126,7 +126,7 @@ function endView(which){
       const fs = Math.max(6, Math.min(10, Math.sqrt(area)/3.4));
       const num = numberOf(p);
       const tx = r1(sx(v.cx)), ty = r1(sy(v.cy));
-      if(num) s += `<text x="${tx}" y="${ty}" font-size="${r1(fs)}" font-weight="bold" fill="#0f172a" text-anchor="middle" dominant-baseline="middle">${num}</text>`;
+      if(num) s += `<text x="${tx}" y="${ty}" font-size="${r1(fs)}" font-weight="bold" fill="#0f172a" text-anchor="middle" dominant-baseline="middle">${esc(num)}</text>`;
       if(!num || area >= 620){
         s += `<text x="${tx}" y="${r1(num ? ty+fs : ty)}" font-size="${r1(num ? fs*0.72 : fs)}" fill="#334155" text-anchor="middle" dominant-baseline="middle">#${p.seq}</text>`;
       }

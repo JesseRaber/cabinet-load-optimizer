@@ -1,7 +1,7 @@
 /* 3D cabinet dragging for the Manual Layout view. */
 (function(){
   'use strict';
-  let active=null, ghostGroup=null;
+  let active=null, ghostGroup=null, ghostMesh=null;
 
   function rayFromEvent(evt){
     const r=renderer.domElement.getBoundingClientRect();
@@ -18,21 +18,21 @@
     return {x:hit.x+g.W/2,z:hit.z+g.totalL/2};
   }
   function clearGhost(){
-    if(!ghostGroup) return;
-    for(const ch of ghostGroup.children){
-      if(ch.geometry) ch.geometry.dispose();
-      if(ch.material) ch.material.dispose();
-    }
-    ghostGroup.clear();
+    if(ghostGroup) ghostGroup.visible=false;
+  }
+  function ensureGhost(){
+    if(ghostGroup) return;
+    ghostGroup=new THREE.Group(); ghostGroup.name='dragGhostGroup';
+    ghostMesh=new THREE.Mesh(new THREE.BoxGeometry(1,1,1),
+      new THREE.MeshBasicMaterial({color:0x22c55e,transparent:true,opacity:0.42,depthWrite:false}));
+    ghostGroup.add(ghostMesh); scene.add(ghostGroup);
   }
   function paintGhost(box,chk){
-    if(!ghostGroup){ ghostGroup=new THREE.Group(); ghostGroup.name='dragGhostGroup'; scene.add(ghostGroup); }
-    clearGhost();
+    ensureGhost(); ghostGroup.visible=true;
     const g=window.CLO_ML.getGeometry(), ox=-g.W/2, oz=-g.totalL/2;
-    const mesh=new THREE.Mesh(new THREE.BoxGeometry(box.w,box.h,box.d),
-      new THREE.MeshBasicMaterial({color:chk.ok?0x22c55e:0xef4444,transparent:true,opacity:0.42,depthWrite:false}));
-    mesh.position.set(box.x+box.w/2+ox,box.y+box.h/2,box.z+box.d/2+oz);
-    ghostGroup.add(mesh);
+    ghostMesh.scale.set(box.w,box.h,box.d);
+    ghostMesh.position.set(box.x+box.w/2+ox,box.y+box.h/2,box.z+box.d/2+oz);
+    ghostMesh.material.color.setHex(chk.ok?0x22c55e:0xef4444);
   }
   function finish(evt,commit){
     const a=active; if(!a) return;

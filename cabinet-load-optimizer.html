@@ -9,6 +9,7 @@
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 <!-- sql.js: reads a Mozaik JobData.db right in the browser, no server needed -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
+<script src="clo-utils.js?v=1"></script>
 <style>
   body { margin:0; }
   .tabbtn { padding:.5rem 1rem; border-radius:.375rem .375rem 0 0; font-weight:600; font-size:.875rem; color:#64748b; border-bottom:2px solid transparent; }
@@ -71,6 +72,7 @@
       </label>
       <button class="btn btn-green" onclick="optimize()">⚙ Optimize Load</button>
       <button class="btn btn-gray" onclick="doPrint()">🖨 Print Plans</button>
+      <span id="sync-status" class="text-[10px] text-slate-400" aria-live="polite">Saved locally</span>
     </div>
   </header>
 
@@ -328,14 +330,22 @@ function saveAll(){
    used on its own — nothing breaks. */
 const SETTINGS_URL = 'api/settings';
 let _serverReady = false, _serverTimer = null;
+function syncStatus(text, bad){
+  const node=el('sync-status'); if(!node) return;
+  node.textContent=text; node.className='text-[10px] '+(bad?'text-amber-300':'text-slate-400');
+}
 function pushServer(){
   if(!_serverReady) return;                 // don't overwrite the server before we've read it
   if(_serverTimer) clearTimeout(_serverTimer);
   _serverTimer = setTimeout(()=>{
     try{
+      syncStatus('Saving…');
       fetch(SETTINGS_URL, { method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ trailers, misc: miscState() }) }).catch(()=>{});
-    }catch(e){}
+        body: JSON.stringify({ trailers, misc: miscState() }) }).then(r=>{
+          if(!r.ok) throw new Error('settings save failed');
+          syncStatus('Saved');
+        }).catch(()=>syncStatus('Saved locally only',true));
+    }catch(e){ syncStatus('Saved locally only',true); }
   }, 500);
 }
 function pullServer(){
@@ -357,8 +367,8 @@ function pullServer(){
         renderTrailers(); editTrailer(null);
       }
       done();
-    }).catch(done);
-  }catch(e){ done(); }
+    }).catch(()=>{ syncStatus('Saved locally only',true); done(); });
+  }catch(e){ syncStatus('Saved locally only',true); done(); }
 }
 function loadAll(){
   try{ trailers = JSON.parse(localStorage.getItem(LS.trailers))||[]; }catch(e){ trailers=[]; }
@@ -381,6 +391,8 @@ function loadAll(){
   if(!activeTrailerId || !trailers.find(t=>t.id===activeTrailerId)) activeTrailerId = trailers[0].id;
 }
 const el = id => document.getElementById(id);
+const esc = value => CLO_UTIL.escapeHtmlText(value);
+const escAttr = value => CLO_UTIL.escapeHtmlAttribute(value);
 
 /* =================== TABS =================== */
 function showTab(btn){
@@ -555,7 +567,7 @@ function renderCsvMap(){
   const nCols = Math.max(...grid.map(r=>r.length));
   const label = i => hasHeader ? (grid[0][i]||'').trim() || `Column ${i+1}` : `Column ${i+1}`;
   const opts = sel => `<option value="">&mdash; none &mdash;</option>` +
-    Array.from({length:nCols},(_,i)=>`<option value="${i}" ${sel===i?'selected':''}>${i+1}. ${label(i)}</option>`).join('');
+    Array.from({length:nCols},(_,i)=>`<option value="${i}" ${sel===i?'selected':''}>${i+1}. ${esc(label(i))}</option>`).join('');
 
   const body = hasHeader? grid.slice(1) : grid;
   const {rows:preview, errs} = buildCsvRows(grid, map, hasHeader, csvScale(csvState.scale));
@@ -567,7 +579,7 @@ function renderCsvMap(){
       </div>`).join('');
 
   const prevRows = preview.slice(0,3).map(r=>`<tr>
-      <td>${r.rc}</td><td>${r.name}</td><td>${fmtDim(r.w)}</td><td>${fmtDim(r.h)}</td><td>${fmtDim(r.d)}</td></tr>`).join('');
+      <td>${esc(r.rc)}</td><td>${esc(r.name)}</td><td>${fmtDim(r.w)}</td><td>${fmtDim(r.h)}</td><td>${fmtDim(r.d)}</td></tr>`).join('');
 
   el('csv-map').innerHTML = `
     <div class="flex items-baseline justify-between mb-2">
@@ -618,7 +630,7 @@ function commitCsvImport(){
 }
 function readCsvFile(file){
   if(!file) return;
-  csvMsg(`Reading ${file.name}\u2026`,'busy');
+  csvMsg(`Reading ${esc(file.name)}\u2026`,'busy');
   const fr=new FileReader();
   fr.onload = () => readCsvText(fr.result, file.name);
   fr.onerror = () => csvMsg('Could not read that file.','error');
@@ -681,7 +693,7 @@ function dbMsg(html, kind){
 }
 async function importJobDb(file){
   if(!file) return;
-  dbMsg(`Reading ${file.name}\u2026`, 'busy');
+  dbMsg(`Reading ${esc(file.name)}\u2026`, 'busy');
   try{
     const bytes = new Uint8Array(await file.arrayBuffer());
     if(new TextDecoder().decode(bytes.slice(0,15)) !== 'SQLite format 3')
@@ -703,12 +715,12 @@ async function importJobDb(file){
     });
     if(parsed.jobName && !el('job-name').value.trim()) el('job-name').value = parsed.jobName;
 
-    dbMsg(`Imported ${added} cabinet(s)${parsed.jobName? ' from &ldquo;'+parsed.jobName+'&rdquo;':''}.`, 'ok');
+    dbMsg(`Imported ${added} cabinet(s)${parsed.jobName? ' from &ldquo;'+esc(parsed.jobName)+'&rdquo;':''}.`, 'ok');
     if(parsed.skipped.length)
-      el('db-msg').innerHTML += `<div class="text-amber-600 font-normal mt-1">Skipped ${parsed.skipped.length}: ${parsed.skipped.join(', ')}</div>`;
+      el('db-msg').innerHTML += `<div class="text-amber-600 font-normal mt-1">Skipped ${parsed.skipped.length}: ${parsed.skipped.map(esc).join(', ')}</div>`;
     renderCabs(); saveAll();
   }catch(err){
-    dbMsg(err.message, 'error');
+    dbMsg(esc(err.message), 'error');
   }
 }
 function initDbDrop(){
@@ -787,12 +799,16 @@ function renderCabs(){
   el('cab-count').textContent = cabinets.length+' items';
   el('cab-tbody').innerHTML = cabinets.map(c=>`
     <tr>
-      <td><span class="inline-block w-2.5 h-2.5 rounded-sm mr-1" style="background:${roomColor(c)}"></span><b>${c.rc}</b></td>
-      <td>${c.name}<span class="ml-1 text-[9px] font-bold uppercase rounded px-1 py-0.5 align-middle ${CLASS_BADGE[cabClass(c)]}" title="${CLASS_TIP[cabClass(c)]||''}">${CLASS_LABEL[cabClass(c)]||''}</span></td><td>${fmtDim(c.w)}</td><td>${fmtDim(c.h)}</td><td>${fmtDim(c.d)}</td>
-      <td class="text-slate-500">${c.desc||''}</td><td>${c.fin||''}</td>
-      <td class="text-center"><input type="checkbox" ${c.stackOn?'checked':''} onchange="toggleStack('${c.id}')"></td>
-      <td><button class="text-red-500 hover:text-red-700 font-bold" onclick="delCab('${c.id}')">✕</button></td>
+      <td><span class="inline-block w-2.5 h-2.5 rounded-sm mr-1" style="background:${roomColor(c)}"></span><b>${esc(c.rc)}</b></td>
+      <td>${esc(c.name)}<span class="ml-1 text-[9px] font-bold uppercase rounded px-1 py-0.5 align-middle ${CLASS_BADGE[cabClass(c)]}" title="${escAttr(CLASS_TIP[cabClass(c)]||'')}">${esc(CLASS_LABEL[cabClass(c)]||'')}</span></td><td>${fmtDim(c.w)}</td><td>${fmtDim(c.h)}</td><td>${fmtDim(c.d)}</td>
+      <td class="text-slate-500">${esc(c.desc||'')}</td><td>${esc(c.fin||'')}</td>
+      <td class="text-center"><input type="checkbox" ${c.stackOn?'checked':''} data-cab-action="toggle" data-id="${escAttr(c.id)}"></td>
+      <td><button class="text-red-500 hover:text-red-700 font-bold" data-cab-action="delete" data-id="${escAttr(c.id)}">✕</button></td>
     </tr>`).join('');
+  el('cab-tbody').querySelectorAll('[data-cab-action]').forEach(node=>node.addEventListener('change',e=>{
+    if(e.currentTarget.dataset.cabAction==='toggle') toggleStack(e.currentTarget.dataset.id);
+  }));
+  el('cab-tbody').querySelectorAll('button[data-cab-action="delete"]').forEach(node=>node.addEventListener('click',e=>delCab(e.currentTarget.dataset.id)));
 }
 
 /* =================== TRAILER PROFILES =================== */
@@ -803,18 +819,24 @@ function renderTrailers(){
     return `<div class="border rounded-lg p-2.5 ${act?'border-blue-600 bg-blue-50':'border-slate-200'}">
       <div class="flex justify-between items-start">
         <div>
-          <div class="font-bold text-sm">${t.name} ${act?'<span class="text-[10px] bg-blue-600 text-white rounded px-1.5 py-0.5 ml-1">ACTIVE</span>':''}</div>
+          <div class="font-bold text-sm">${esc(t.name)} ${act?'<span class="text-[10px] bg-blue-600 text-white rounded px-1.5 py-0.5 ml-1">ACTIVE</span>':''}</div>
           <div class="text-xs text-slate-500">${t.w}"W × ${t.h}"H × ${Math.round(g.totalL)}"L total
             ${t.type==='gooseneck'?' · gooseneck':''}${t.vnose?' · V-nose':''}${t.ww?' · wheel wells':''}</div>
         </div>
       </div>
       <div class="flex gap-1.5 mt-2">
-        ${act?'':`<button class="btn btn-green !py-0.5 !px-2 text-xs" onclick="setActive('${t.id}')">Use</button>`}
-        <button class="btn btn-gray !py-0.5 !px-2 text-xs" onclick="editTrailer('${t.id}')">Edit</button>
-        <button class="btn btn-red !py-0.5 !px-2 text-xs" onclick="delTrailer('${t.id}')">Delete</button>
+        ${act?'':`<button class="btn btn-green !py-0.5 !px-2 text-xs" data-trailer-action="use" data-id="${escAttr(t.id)}">Use</button>`}
+        <button class="btn btn-gray !py-0.5 !px-2 text-xs" data-trailer-action="edit" data-id="${escAttr(t.id)}">Edit</button>
+        <button class="btn btn-red !py-0.5 !px-2 text-xs" data-trailer-action="delete" data-id="${escAttr(t.id)}">Delete</button>
       </div>
     </div>`;
   }).join('');
+  el('trailer-list').querySelectorAll('[data-trailer-action]').forEach(node=>node.addEventListener('click',e=>{
+    const {trailerAction,id}=e.currentTarget.dataset;
+    if(trailerAction==='use') setActive(id);
+    else if(trailerAction==='edit') editTrailer(id);
+    else if(trailerAction==='delete') delTrailer(id);
+  }));
 }
 function setActive(id){ activeTrailerId=id; results=null; renderTrailers(); saveAll(); }
 function delTrailer(id){
@@ -1272,13 +1294,13 @@ function updateStats(){
   for(const p of placed){ const k=poseText(p); tally[k]=(tally[k]||0)+1; }
   el('s-poses').innerHTML = Object.keys(tally).sort().map(k=>
     `<div class="flex justify-between"><span${k.indexOf('FACE UP')===0?' class="text-amber-700 font-semibold"':''}>${k}</span><b>${tally[k]}</b></div>`).join('');
-  el('s-faillist').innerHTML = failed.map(c=>`✗ ${c.rc} — ${c.name} (${fmtDim(c.w)}×${fmtDim(c.h)}×${fmtDim(c.d)})`).join('<br>');
+  el('s-faillist').innerHTML = failed.map(c=>`✗ ${esc(c.rc)} — ${esc(c.name)} (${fmtDim(c.w)}×${fmtDim(c.h)}×${fmtDim(c.d)})`).join('<br>');
   el('seq-list').innerHTML = placed.map(p=>{
     const fromRear = g.totalL-(p.z+p.d);
     const onFloor = Math.abs(p.y-floorYAt(g,p.z))<0.5;
     return `<div class="border rounded p-1.5 flex items-center gap-2" style="border-left:4px solid ${roomColor(p.cab)}">
       <b class="text-slate-400">#${p.seq}</b>
-      <div><b>${p.cab.rc}</b> ${p.cab.name}${isBulky(p.cab)?' <span class="text-[9px] font-bold text-white bg-orange-500 rounded px-1">2+ ppl</span>':''}<br>
+      <div><b>${esc(p.cab.rc)}</b> ${esc(p.cab.name)}${isBulky(p.cab)?' <span class="text-[9px] font-bold text-white bg-orange-500 rounded px-1">2+ ppl</span>':''}<br>
       <span class="text-slate-500">${fmtDim(p.cab.w)}×${fmtDim(p.cab.h)}×${fmtDim(p.cab.d)} · ${fromRear.toFixed(0)}" from rear · ${p.x.toFixed(0)}" from left${onFloor?'':' · stacked at '+p.y.toFixed(0)+'"'} · <b class="${p.pose==='back'&&p.cls!=='flat'&&p.cls!=='pkg'?'text-amber-700':'text-slate-600'}">${poseText(p)}</b>${p.rot?', turned 90°':''}${isFaceUp(p)?' · <b class="text-amber-700">nothing on top</b>':''}</span></div>
     </div>`;
   }).join('');
@@ -1322,9 +1344,22 @@ function makeLabel(text, color){
   sp.scale.set(26,10,1);
   return sp;
 }
+function dispose3DObject(root){
+  if(!root) return;
+  const geometries=new Set(), materials=new Set(), textures=new Set();
+  root.traverse(obj=>{
+    if(obj.geometry) geometries.add(obj.geometry);
+    const mats=Array.isArray(obj.material)?obj.material:[obj.material];
+    for(const mat of mats){
+      if(!mat) continue; materials.add(mat);
+      for(const value of Object.values(mat)) if(value && value.isTexture) textures.add(value);
+    }
+  });
+  textures.forEach(x=>x.dispose()); materials.forEach(x=>x.dispose()); geometries.forEach(x=>x.dispose());
+}
 function draw3D(){
   if(!threeReady) return;
-  if(loadGroup) scene.remove(loadGroup);
+  if(loadGroup){ scene.remove(loadGroup); dispose3DObject(loadGroup); }
   loadGroup = new THREE.Group();
   const t = trailers.find(x=>x.id===activeTrailerId); if(!t){ scene.add(loadGroup); return; }
   const g = results? results.geom : geomOf(t);
@@ -1437,7 +1472,7 @@ function svgFloorplan(level){ // level: 'floor' | 'stacked'
     const c=roomColor(p.cab);
     s += `<rect x="${sx(p.z)}" y="${sy(p.x)}" width="${p.d*sc}" height="${p.w*sc}" fill="${c}" fill-opacity="0.55" stroke="${c}" stroke-width="1.5"/>`;
     const fs = Math.max(6.5, Math.min(11, p.d*sc/4, p.w*sc/3));
-    s += `<text x="${sx(p.z+p.d/2)}" y="${sy(p.x+p.w/2)}" font-size="${fs}" font-weight="bold" fill="#0f172a" text-anchor="middle" dominant-baseline="middle">${p.cab.rc}</text>`;
+    s += `<text x="${sx(p.z+p.d/2)}" y="${sy(p.x+p.w/2)}" font-size="${fs}" font-weight="bold" fill="#0f172a" text-anchor="middle" dominant-baseline="middle">${esc(p.cab.rc)}</text>`;
     s += `<text x="${sx(p.z+p.d/2)}" y="${sy(p.x+p.w/2)+fs}" font-size="${fs*0.7}" fill="#334155" text-anchor="middle" dominant-baseline="middle">#${p.seq}</text>`;
   }
   // ruler along bottom (distance from rear)
@@ -1475,7 +1510,7 @@ function svgElevation(side){ // 'left' | 'right' : cabinets whose center is on t
     const c=roomColor(p.cab);
     s += `<rect x="${sx(p.z)}" y="${sy(p.y+p.h)}" width="${p.d*sc}" height="${p.h*sc}" fill="${c}" fill-opacity="0.55" stroke="${c}" stroke-width="1.5"/>`;
     const fs=Math.max(6.5, Math.min(11, p.d*sc/4, p.h*sc/3));
-    s += `<text x="${sx(p.z+p.d/2)}" y="${sy(p.y+p.h/2)}" font-size="${fs}" font-weight="bold" fill="#0f172a" text-anchor="middle" dominant-baseline="middle">${p.cab.rc}</text>`;
+    s += `<text x="${sx(p.z+p.d/2)}" y="${sy(p.y+p.h/2)}" font-size="${fs}" font-weight="bold" fill="#0f172a" text-anchor="middle" dominant-baseline="middle">${esc(p.cab.rc)}</text>`;
     s += `<text x="${sx(p.z+p.d/2)}" y="${sy(p.y+p.h/2)+fs}" font-size="${fs*0.7}" fill="#334155" text-anchor="middle" dominant-baseline="middle">#${p.seq}</text>`;
   }
   s += `<text x="${sx(g.totalL)+4}" y="${sy(g.H/2)}" font-size="10" fill="#dc2626" transform="rotate(90 ${sx(g.totalL)+4} ${sy(g.H/2)})" text-anchor="middle">REAR</text>`;
@@ -1497,15 +1532,15 @@ function manifestTable(){
     return `<tr>
       <td style="font-weight:bold">${p.seq}</td>
       <td><span style="display:inline-block;width:9px;height:9px;background:${roomColor(p.cab)};margin-right:4px"></span><b>${numLabel}</b></td>
-      <td>${p.cab.name}</td>
+      <td>${esc(p.cab.name)}</td>
       <td>${fmtDim(p.cab.w)} × ${fmtDim(p.cab.h)} × ${fmtDim(p.cab.d)}</td>
       <td>${fmtDim(fromRear)}" fwd of rear doors, ${fmtDim(p.x)}" from left wall</td>
       <td>${level}</td>
-      <td><b>${pose}</b>${p.rot?' · turned 90°':''}${isFaceUp(p)?' <b style="color:#b45309">· DO NOT STACK ON</b>':''}${p.cab.fin&&p.cab.fin!=='None'?' · Fin: '+p.cab.fin:''}</td>
+      <td><b>${pose}</b>${p.rot?' · turned 90°':''}${isFaceUp(p)?' <b style="color:#b45309">· DO NOT STACK ON</b>':''}${p.cab.fin&&p.cab.fin!=='None'?' · Fin: '+esc(p.cab.fin):''}</td>
     </tr>`;
   }).join('');
   let failHtml = failed.length? `<h3 style="color:#dc2626;margin-top:14px;font-weight:bold">DID NOT FIT (${failed.length})</h3>
-    <ul style="color:#dc2626;font-size:12px;padding-left:18px">${failed.map(c=>`<li>${c.rc} — ${c.name} (${fmtDim(c.w)}×${fmtDim(c.h)}×${fmtDim(c.d)})</li>`).join('')}</ul>`:'';
+    <ul style="color:#dc2626;font-size:12px;padding-left:18px">${failed.map(c=>`<li>${esc(c.rc)} — ${esc(c.name)} (${fmtDim(c.w)}×${fmtDim(c.h)}×${fmtDim(c.d)})</li>`).join('')}</ul>`:'';
   return `<table class="grid" style="font-size:11px"><thead><tr>
     <th>Load #</th><th>Cabinet · Pkg #</th><th>Name</th><th>W×H×D</th><th>Position (measure from rear doors / left wall)</th><th>Level</th><th>Notes</th>
     </tr></thead><tbody>${rows}</tbody></table>` + failHtml;
@@ -1531,7 +1566,7 @@ function loadingOrderHTML(){
       <div style="font-weight:800;font-size:14px;min-width:26px;text-align:right;color:#0f172a">${p.seq}</div>
       <div style="width:11px;height:11px;border-radius:2px;background:${roomColor(p.cab)};flex:none"></div>
       <div style="flex:1;line-height:1.25">
-        <span style="font-weight:700">${p.cab.rc}</span> ${p.cab.name}
+        <span style="font-weight:700">${esc(p.cab.rc)}</span> ${esc(p.cab.name)}
         ${big?'<span style="background:#ea580c;color:#fff;font-size:9px;font-weight:800;padding:1px 6px;border-radius:8px;margin-left:4px;white-space:nowrap">LARGE &middot; 2+ PEOPLE</span>':''}
         ${up?'<span style="background:#b45309;color:#fff;font-size:9px;font-weight:800;padding:1px 6px;border-radius:8px;margin-left:4px;white-space:nowrap">FACE UP &middot; NOTHING ON TOP</span>':''}
         <div style="font-size:11px;color:#475569">${fmtDim(p.cab.w)}&times;${fmtDim(p.cab.h)}&times;${fmtDim(p.cab.d)} &middot; <b>${poseText(p)}</b>${p.rot?', turned 90&deg;':''} &middot; ${fmtDim(fromRear)}" from rear doors, ${fmtDim(p.x)}" from left wall${layer?', sitting '+fmtDim(p.y)+'" up':''}</div>
@@ -1550,8 +1585,8 @@ function plansHTML(forPrint){
   const hasStacked = placed.some(p=>Math.abs(p.y-floorYAt(g,p.z))>=0.5);
   const hdr = `<div style="border-bottom:3px solid #0f172a;padding-bottom:8px;margin-bottom:14px">
     <table style="width:100%"><tr>
-    <td><div style="font-size:22px;font-weight:800">Trailer Load Plan — ${job}</div>
-    <div style="font-size:12px;color:#475569">Trailer: <b>${t.name}</b> (${t.w}"W × ${t.h}"H × ${Math.round(g.totalL)}"L${g.gn?', gooseneck':''}${g.taper?', V-nose':''}${g.wells.length?', wheel wells':''}) ·
+    <td><div style="font-size:22px;font-weight:800">Trailer Load Plan — ${esc(job)}</div>
+    <div style="font-size:12px;color:#475569">Trailer: <b>${esc(t.name)}</b> (${t.w}"W × ${t.h}"H × ${Math.round(g.totalL)}"L${g.gn?', gooseneck':''}${g.taper?', V-nose':''}${g.wells.length?', wheel wells':''}) ·
     Clearance between cabinets: ${results.gap}"${hasStacked&&results.ply?' · '+fmtDim(results.ply)+'" plywood deck between layers':''} · ${placed.length} loaded${failed.length?', <span style="color:#dc2626">'+failed.length+' did not fit</span>':''}</div></td>
     <td style="text-align:right;font-size:11px;color:#64748b">${new Date().toLocaleDateString()}<br>Left wall = your left standing at the rear doors looking forward</td>
     </tr></table></div>`;
@@ -1597,10 +1632,10 @@ el('m-rc').addEventListener('input', syncStackDefault);
 syncStackDefault();
 ['t-h','t-gnh','t-l','t-wwr','t-wwl','t-wwf'].forEach(id=>el(id).addEventListener('input',tfRefresh));
 </script>
-<script src="manual-layout.js"></script>
-<script src="load-learning.js"></script>
-<script src="end-views.js"></script>
-<script src="drag-3d.js"></script>
-<script src="load-rules-v2.js"></script>
+<script src="manual-layout.js?v=3"></script>
+<script src="load-learning.js?v=2"></script>
+<script src="end-views.js?v=2"></script>
+<script src="drag-3d.js?v=2"></script>
+<script src="load-rules-v2.js?v=2"></script>
 </body>
 </html>
