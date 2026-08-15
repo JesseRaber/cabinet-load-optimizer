@@ -21,7 +21,7 @@
      model, no weights and no training — it is counting the times you disagreed
      with the packer and looking for a consistent pattern in those counts. Every
      suggestion is text for you to read, accept or throw out. Real rule changes
-     happen when you edit POSE_ORDER or packLoad() in the app by hand.
+     happen when you edit the active rules in load-rules-v2.js by hand.
 
    Storage: localStorage only, on this device, under the key below. Nothing is
    uploaded. Export the JSON if you want to keep it or hand it to someone.
@@ -176,8 +176,10 @@ function confidence(n, share){
 function fd(v){ return (typeof fmtDim === 'function') ? fmtDim(Math.abs(v)) : Math.abs(v).toFixed(1); }
 function pct(x){ return Math.round(x*100) + '%'; }
 function orderOf(cls){
-  try{ return (POSE_ORDER[cls] || POSE_ORDER.other).map(p=>POSE_NAME[p]||p).join(' → '); }
-  catch(e){ return '(see POSE_ORDER in the app)'; }
+  try{
+    const order=window.CLO_POSE_ORDER;
+    return (order[cls] || order.other).map(p=>POSE_NAME[p]||p).join(' → ');
+  }catch(e){ return '(see CLOSafety.POSE_ORDER in load-safety-core.js)'; }
 }
 
 /* ============================================================================
@@ -217,7 +219,7 @@ function analyse(){
               + `The packer laid ${autoTotals[cls]||0} ${kind(cls)}(s) in total across the runs on file.`,
       suggest: `Try <b>${POSE_NAME[to]}</b> ahead of <b>${POSE_NAME[from]}</b> for this kind. `
              + `The order right now is <code>${orderOf(cls)}</code>.`,
-      where: `POSE_ORDER.${cls} in cabinet-load-optimizer.html`
+      where: `CLOSafety.POSE_ORDER.${cls} in load-safety-core.js`
     });
   }
 
@@ -234,7 +236,7 @@ function analyse(){
               + `${pct(share)} of the ${b.mv} moves you made to this kind.`,
       suggest: `Offer the turned version of each pose first for this kind, so the search tries the long way `
              + `across the trailer before the long way along it.`,
-      where: `makePoses() — the order the rot:true variants are pushed`
+      where: `load-rules-v2.js makePoses() — the order the rot:true variants are pushed`
     });
   }
 
@@ -254,7 +256,7 @@ function analyse(){
         + `existing floor pass. It is currently reaching the deck only by spilling into the "layers above" queue.`
         : `Stop trying this kind on the floor first. Send it straight to the layers above so the deck is left `
         + `for the pieces that carry weight.`,
-      where: `packLoad() — the phase order, and which classes get O('floor')`
+      where: `load-rules-v2.js packLoad() — the phase order, and which classes get O('floor')`
     });
   }
 
@@ -281,7 +283,7 @@ function analyse(){
           + `sort order for its phase.`
           : `The scan fills from the left wall. A consistent drift toward ${toward} suggests this kind should be `
           + `placed after the pieces it is being pushed past, not before them.`,
-        where: `packLoad() — the sort comparators (byVol / byWide) and the phase each class sits in`
+        where: `load-rules-v2.js packLoad() — the sort comparators (byVol / byWide) and the phase each class sits in`
       });
     }
   }
@@ -300,11 +302,11 @@ function analyse(){
       title: `${rescues.length} piece(s) the packer said would not fit, and you fitted by hand`,
       observed: `Mostly ${kind(t.key)}(s) (${t.n} of ${rescues.length}). `
               + `You ended up putting them <b>${POSE_NAME[topHow.key]||topHow.key}</b> in ${topHow.n} of those cases. `
-              + `Pieces: ${uniq(rescues.map(e=>e.rc), 12).text}.`,
+              + `Pieces: ${esc(uniq(rescues.map(e=>e.rc), 12).text)}.`,
       suggest: `The candidate-position search is giving up while there is still room. Widen it for these pieces — `
              + `either allow the pose you settled on earlier in the preference list, or add a final pass that `
              + `retries anything in the failed list against every surface before reporting it as unfittable.`,
-      where: `packLoad() — the failed list, and tryPlace()'s candidate positions`
+      where: `load-rules-v2.js packLoad() — the failed list, and tryPlace()'s candidate positions`
     });
   }
 
@@ -318,11 +320,11 @@ function analyse(){
       cls: top(byC).key, n:faceUp.length, share:1, conf:'strong', rule:true,
       title: `Face-up fallback is firing when a better pose was available`,
       observed: `${faceUp.length} real cabinet placement(s) were face up and you turned them off their doors: `
-              + `${uniq(faceUp.map(e=>e.rc+' → '+(POSE_NAME[e.to.pose]||e.to.pose)), 12).text}.`,
+              + `${esc(uniq(faceUp.map(e=>e.rc+' → '+(POSE_NAME[e.to.pose]||e.to.pose)), 12).text)}.`,
       suggest: `Face up is supposed to be the last resort for a cabinet, because whatever goes on top rides on `
              + `the doors. If it is being chosen while an on-its-side spot existed, the side pose is being `
              + `rejected too readily — check the stand-up and support tests before the back pose is offered.`,
-      where: `packLoad() — the pref / noBack fallback, and isFaceUp() handling`
+      where: `load-rules-v2.js packLoad() — the pref / noBack fallback, and isFaceUp() handling`
     });
   }
 
@@ -335,7 +337,7 @@ function analyse(){
       cls: t.key, n:removed.length, share:t.share, conf:confidence(removed.length, t.share),
       title: `${removed.length} piece(s) were pulled out of the load after packing`,
       observed: `Mostly ${kind(t.key)}(s) (${t.n} of ${removed.length}): `
-              + `${uniq(removed.map(e=>e.rc), 12).text}.`,
+              + `${esc(uniq(removed.map(e=>e.rc), 12).text)}.`,
       suggest: `Taking a piece out is usually about the job rather than the rules — a second trip, or something `
              + `that ships another way. Worth a look only if the same kind keeps coming out, which would mean it `
              + `should not be in the packing list at all.`,
@@ -472,8 +474,8 @@ function renderTuning(){
         const n = Object.keys(r.edits||{}).length;
         return `<tr>
           <td>${new Date(r.at).toLocaleString()}</td>
-          <td>${r.job || '<span class="text-slate-400">—</span>'}</td>
-          <td>${r.trailer ? r.trailer.name : '<span class="text-slate-400">—</span>'}</td>
+          <td>${r.job ? esc(r.job) : '<span class="text-slate-400">—</span>'}</td>
+          <td>${r.trailer ? esc(r.trailer.name) : '<span class="text-slate-400">—</span>'}</td>
           <td>${r.loaded || 0}</td>
           <td>${(r.failed||[]).length}</td>
           <td class="${n?'font-bold':''}">${n}</td>

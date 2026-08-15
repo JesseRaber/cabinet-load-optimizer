@@ -77,7 +77,9 @@ function poseBox(cab, pose, rot){
 function pinBox(cab){
   const b = poseBox(cab, cab.pin.pose, cab.pin.rot);
   return { x:cab.pin.x, y:cab.pin.y, z:cab.pin.z, w:b.w, h:b.h, d:b.d,
-           pose:cab.pin.pose, rot:cab.pin.rot, cls:cabClass(cab), cab, pinned:true };
+           pose:cab.pin.pose, rot:cab.pin.rot, cls:cabClass(cab), cab, pinned:true,
+           flip: cab.pin.flip!=null ? !!cab.pin.flip : (cabClass(cab)==='wall'&&cab.pin.pose==='upright'),
+           onDoors:!!cab.pin.onDoors, carrying:Number(cab.pin.carrying)||0 };
 }
 function boxOf(cab){ return results ? results.placed.find(p=>p.cab.id===cab.id) : null; }
 function inTrailer(cab){ return !!boxOf(cab); }
@@ -93,6 +95,7 @@ function overlapArea(a,b){
 function checkPlace(g, others, gap, box, ply){
   const eps = 0.01, why = [];
   const {x,y,z,w,h,d} = box;
+  if(!CLOSafety.canEnterRear(box.cab||{},g.rear)) why.push('cannot pass through the rear door opening');
   if(x < -eps || z < -eps)      why.push('past the front/left wall');
   if(y + h > g.H + eps)         why.push('taller than the ceiling');
   if(z + d > g.totalL + eps)    why.push('sticks out the rear doors');
@@ -116,13 +119,18 @@ function checkPlace(g, others, gap, box, ply){
     let sup = 0;
     for(const p of others){
       if(!isSupport(p)) continue;
-      if(Math.abs(p.y + p.h + ply - y) < 0.6) sup += overlapArea(b,p);
+      if(Math.abs(p.y + p.h + ply - y) < 1.25) sup += overlapArea(b,p);
     }
-    for(const wl of g.wells) if(Math.abs(wl.y + wl.h - y) < 0.6) sup += overlapArea(b,wl);
+    for(const wl of g.wells) if(Math.abs(wl.y + wl.h - y) < 1.25) sup += overlapArea(b,wl);
     supported = sup >= w*d*0.6;
   }
   if(!supported) why.push('nothing solid underneath');
-  return { ok: why.length===0, why, supported };
+  let active=null;
+  if(!why.length && typeof window.validatePlacementV2==='function'){
+    active=window.validatePlacementV2(g,others,gap,box,ply,curSC());
+    if(!active.ok) why.push(active.reason);
+  }
+  return { ok: why.length===0, why, supported, active };
 }
 
 /* Heights this footprint could sit at: the floor/deck, plus the top of anything
@@ -172,21 +180,29 @@ function refreshAll(){
 function commit(cab, box, undoKey){
   const was = boxOf(cab);
   const from = was ? boxSig(was) : null;
+  const r = ensureResults();
+  let others = r.placed.filter(p=>p.cab.id!==cab.id);
+  if(typeof window.validateSeedLayoutV2==='function'){
+    const normalized=window.validateSeedLayoutV2(r.geom,others,curGap(),curPly(),curSC());
+    if(!normalized.ok){ say('Resolve the existing invalid placement(s) before pinning another cabinet.', 'bad'); return; }
+    others=normalized.accepted;
+  }
+  const candidate=Object.assign({},box,{cab,cls:cabClass(cab),pinned:true});
+  const chk = checkPlace(r.geom, others, curGap(), candidate, curPly());
+  if(!chk.ok){ say(`${cab.rc} was not pinned: ${chk.why.join('; ')}.`, 'bad'); return; }
   pushUndo(from ? `move ${cab.rc}` : `place ${cab.rc}`,
            undoKey ? cab.id+':'+undoKey : '', cab.id);
 
-  cab.pin = { x:rnd(box.x), y:rnd(box.y), z:rnd(box.z), pose:box.pose, rot:box.rot };
-  const r = ensureResults();
-  r.placed = r.placed.filter(p=>p.cab.id!==cab.id);
+  cab.pin = { x:rnd(box.x), y:rnd(box.y), z:rnd(box.z), pose:box.pose, rot:box.rot,
+              flip:cabClass(cab)==='wall'&&box.pose==='upright',
+              onDoors:!!(chk.active&&chk.active.rep&&chk.active.rep.onDoors) };
+  r.placed = others;
   r.failed = (r.failed||[]).filter(c=>c.id!==cab.id);
   const p = pinBox(cab);
-  const chk = checkPlace(r.geom, r.placed, curGap(), p, curPly());
-  if(!chk.ok) p.warn = chk.why.join('; ');
   r.placed.push(p);
   M.sel = { kind:'placed', cab };
   reportEdit('move', cab, from, boxSig(p));
-  say(chk.ok ? `${cab.rc} pinned — ${poseText(p)}${p.rot?', turned 90°':''} at ${fmtDim(r.geom.totalL-(p.z+p.d))}" from the rear doors.`
-             : `${cab.rc} pinned, but check it: ${chk.why.join('; ')}.`, chk.ok?'ok':'warn');
+  say(`${cab.rc} pinned — ${poseText(p)}${p.rot?', turned 90°':''} at ${fmtDim(r.geom.totalL-(p.z+p.d))}" from the rear doors.`, 'ok');
   saveAll(); refreshAll();
 }
 function takeOut(cab){                       // back to the list
@@ -346,18 +362,22 @@ window.optimize = function(){
   const g = geomOf(t), gap = curGap(), ply = curPly(), SC = curSC();
   const allowStack = el('allow-stack').checked;
   const allowBack  = el('allow-back') ? el('allow-back').checked : true;
-  pushUndo('optimize run');
-
   /* ---- Phase 0: the pins. Checked for problems, then handed to the packer as
      immovable seed boxes so nothing is ever placed through them. ---- */
   const seed = [], pinIssues = [];
-  for(const cab of cabinets){
-    if(!cab.pin) continue;
-    const p = pinBox(cab);
+  const pinBoxes=cabinets.filter(c=>c.pin).map(pinBox).sort((a,b)=>a.y-b.y || a.z-b.z || a.x-b.x);
+  for(const p of pinBoxes){
+    const cab=p.cab;
     const chk = checkPlace(g, seed, gap, p, ply);
     if(!chk.ok){ p.warn = chk.why.join('; '); pinIssues.push({cab, why:chk.why}); }
     seed.push(p);
   }
+  if(pinIssues.length){
+    say(`Optimize stopped: ${pinIssues.length} pinned cabinet(s) violate active safety rules. `+
+        pinIssues.map(p=>`${p.cab.rc} (${p.why.join(', ')})`).join(' · '), 'bad');
+    return;
+  }
+  pushUndo('optimize run');
 
   /* ---- Everything else: the app's own engine packs around them. packLoad()
      owns the loading rules -- bases upright on the deck, tall and wall cabinets
@@ -366,8 +386,12 @@ window.optimize = function(){
      top of it. Those rules live in ONE place. Do not restate them here. ---- */
   const r = packLoad(cabinets.filter(c=>!c.pin), g,
                      { gap, ply, allowStack, allowBack, standMargin:SC, seed });
+  if(r.invalidSeeds && r.invalidSeeds.length){
+    say('Optimize stopped because a pinned placement failed the active V2 safety rules.', 'bad');
+    return;
+  }
 
-  results = { trailer:t, geom:g, placed:r.placed, failed:r.failed, gap, ply, pinIssues };
+  results = { trailer:t, geom:g, placed:r.placed, failed:r.failed, gap, ply, pinIssues, safetyIssues:[] };
   resequence();
   saveAll();
   updateStats();
@@ -670,17 +694,17 @@ function renderPalette(){
   const out = cabinets.filter(c=>!inTrailer(c));
   const host = el('ml-palette');
   if(!out.length){ host.innerHTML = '<div class="text-xs text-slate-400 py-2">Everything is in the trailer.</div>'; return; }
-  const byRoom = {};
+  const byRoom = Object.create(null);
   for(const c of out){ const r = roomOf(c); (byRoom[r] = byRoom[r]||[]).push(c); }
   host.innerHTML = Object.keys(byRoom).map(r=>`
-    <div class="text-[10px] font-bold uppercase text-slate-400 pt-1">${r===PKG_ROOM?'Packages':'Room '+r}</div>` +
+    <div class="text-[10px] font-bold uppercase text-slate-400 pt-1">${esc(r===PKG_ROOM?'Packages':'Room '+r)}</div>` +
     byRoom[r].map(c=>{
       const on = M.sel && M.sel.kind==='list' && M.sel.cab.id===c.id;
       return `<div class="ml-chip flex items-center gap-2 border rounded px-2 py-1 cursor-grab ${on?'border-blue-600 bg-blue-50':'border-slate-200 hover:border-slate-400'}"
                data-cid="${c.id}" style="touch-action:none">
         <span class="w-2.5 h-2.5 rounded-sm flex-none" style="background:${roomColor(c)}"></span>
         <div class="min-w-0 leading-tight">
-          <div class="text-xs font-bold truncate">${c.rc} <span class="font-normal text-slate-500">${c.name}</span></div>
+          <div class="text-xs font-bold truncate">${esc(c.rc)} <span class="font-normal text-slate-500">${esc(c.name)}</span></div>
           <div class="text-[10px] text-slate-400">${fmtDim(c.w)} × ${fmtDim(c.h)} × ${fmtDim(c.d)}${isBulky(c)?' · 2+ ppl':''}</div>
         </div>
       </div>`;
@@ -702,12 +726,12 @@ function renderTools(){
   const pose = p ? p.pose : M.pose, rot = p ? p.rot : M.rot;
   const bx = p || Object.assign({}, poseBox(cab,pose,rot));
   host.innerHTML = `
-    <div class="text-xs font-bold mb-0.5">${cab.rc} <span class="font-normal text-slate-500">${cab.name}</span></div>
+    <div class="text-xs font-bold mb-0.5">${esc(cab.rc)} <span class="font-normal text-slate-500">${esc(cab.name)}</span></div>
     <div class="text-[11px] text-slate-500 mb-2">
       ${fmtDim(cab.w)} × ${fmtDim(cab.h)} × ${fmtDim(cab.d)} · lying <b>${poseText({pose})}</b>${rot?', turned 90°':''}<br>
       Footprint ${fmtDim(bx.d)}" along the trailer × ${fmtDim(bx.w)}" across, ${fmtDim(bx.h)}" tall
       ${p ? `<br>${fmtDim(M.g.totalL-(p.z+p.d))}" from the rear doors, ${fmtDim(p.x)}" from the left wall${Math.abs(p.y-floorYAt(M.g,p.z))<0.5?'':', stacked at '+fmtDim(p.y)+'"'}` : ''}
-      ${p && p.warn ? `<br><span class="text-red-600 font-bold">⚠ ${p.warn}</span>` : ''}
+      ${p && p.warn ? `<br><span class="text-red-600 font-bold">⚠ ${esc(p.warn)}</span>` : ''}
     </div>
     <div class="flex flex-wrap gap-1.5">
       <button class="btn btn-gray !py-1 !px-2 text-xs" data-act="rot" title="Swap which way it faces across the trailer">↻ Turn 90°</button>
@@ -754,7 +778,7 @@ function paintStatus(node){
             :                      'bg-slate-100 border border-slate-200 text-slate-600';
   node.className = 'text-xs rounded px-3 py-2 ' + cls;
   node.innerHTML = `<b>${nIn}</b> in the trailer · <b>${nPin}</b> pinned 📌 · <b>${cabinets.length-nIn}</b> still in the list`
-    + (M.msg ? ` — ${M.msg}` : '');
+    + (M.msg ? ` — ${esc(M.msg)}` : '');
 }
 
 function renderCanvas(){
@@ -780,7 +804,7 @@ function renderCanvas(){
     const fs = Math.max(6.5, Math.min(12, p.d*sc/4, p.w*sc/3));
     s += `<text x="${sx(p.z+p.d/2)}" y="${sy(p.x+p.w/2)-fs*0.15}" font-size="${fs}" font-weight="bold"
             fill="#0f172a" text-anchor="middle" dominant-baseline="middle" pointer-events="none"
-            >${p.pinned?'📌':''}${p.cab.rc}</text>`;
+            >${p.pinned?'📌':''}${esc(p.cab.rc)}</text>`;
     s += `<text x="${sx(p.z+p.d/2)}" y="${sy(p.x+p.w/2)+fs}" font-size="${fs*0.72}" fill="#334155"
             text-anchor="middle" dominant-baseline="middle" pointer-events="none"
             >#${p.seq} · ${POSE_SHORT[p.pose]}${p.rot?'↻':''}${onFloor?'':' · '+fmtDim(p.y)+'"'}</text>`;
@@ -1034,9 +1058,9 @@ window.updateStats = function(){
     const onFloor = Math.abs(p.y-floorYAt(g,p.z))<0.5;
     return `<div class="border rounded p-1.5 flex items-center gap-2" style="border-left:4px solid ${roomColor(p.cab)}">
       <b class="text-slate-400">#${p.seq}</b>
-      <div><b>${p.cab.rc}</b> ${p.cab.name}${p.pinned?' <span title="placed by hand">📌</span>':''}${isBulky(p.cab)?' <span class="text-[9px] font-bold text-white bg-orange-500 rounded px-1">2+ ppl</span>':''}<br>
+      <div><b>${esc(p.cab.rc)}</b> ${esc(p.cab.name)}${p.pinned?' <span title="placed by hand">📌</span>':''}${isBulky(p.cab)?' <span class="text-[9px] font-bold text-white bg-orange-500 rounded px-1">2+ ppl</span>':''}<br>
       <span class="text-slate-500">${fmtDim(p.cab.w)}×${fmtDim(p.cab.h)}×${fmtDim(p.cab.d)} · ${fromRear.toFixed(0)}" from rear · ${p.x.toFixed(0)}" from left${onFloor?'':' · stacked at '+p.y.toFixed(0)+'"'} · <b class="text-slate-600">${poseText(p)}</b>${p.rot?', turned 90°':''}</span>
-      ${p.warn?`<br><span class="text-red-600 text-[10px] font-bold">⚠ ${p.warn}</span>`:''}</div>
+      ${p.warn?`<br><span class="text-red-600 text-[10px] font-bold">⚠ ${esc(p.warn)}</span>`:''}</div>
     </div>`;
   }).join('');
 };
@@ -1059,11 +1083,11 @@ window.loadingOrderHTML = function(){
       <div style="font-weight:800;font-size:14px;min-width:26px;text-align:right;color:#0f172a">${p.seq}</div>
       <div style="width:11px;height:11px;border-radius:2px;background:${roomColor(p.cab)};flex:none"></div>
       <div style="flex:1;line-height:1.25">
-        <span style="font-weight:700">${p.cab.rc}</span> ${p.cab.name}
+        <span style="font-weight:700">${esc(p.cab.rc)}</span> ${esc(p.cab.name)}
         ${p.pinned?'<span style="border:1.5px solid #d97706;color:#92400e;font-size:9px;font-weight:800;padding:0 5px;border-radius:8px;margin-left:4px;white-space:nowrap">SET SPOT</span>':''}
         ${big?'<span style="background:#ea580c;color:#fff;font-size:9px;font-weight:800;padding:1px 6px;border-radius:8px;margin-left:4px;white-space:nowrap">LARGE · 2+ PEOPLE</span>':''}
         <div style="font-size:11px;color:#475569">${fmtDim(p.cab.w)}×${fmtDim(p.cab.h)}×${fmtDim(p.cab.d)} · <b>${poseText(p)}</b>${p.rot?', turned 90°':''} · ${fmtDim(fromRear)}" from rear doors, ${fmtDim(p.x)}" from left wall</div>
-        ${p.warn?`<div style="font-size:11px;color:#b91c1c;font-weight:700">⚠ ${p.warn}</div>`:''}
+        ${p.warn?`<div style="font-size:11px;color:#b91c1c;font-weight:700">⚠ ${esc(p.warn)}</div>`:''}
       </div>
     </div>`;
   }
@@ -1082,10 +1106,10 @@ window.plansHTML = function(forPrint){
   const g = results.geom;
   const rows = pins.map(p=>`<tr>
       <td style="font-weight:bold">${p.seq}</td>
-      <td><b>${p.cab.rc}</b></td><td>${p.cab.name}</td>
+      <td><b>${esc(p.cab.rc)}</b></td><td>${esc(p.cab.name)}</td>
       <td>${fmtDim(g.totalL-(p.z+p.d))}" fwd of rear doors, ${fmtDim(p.x)}" from left wall${Math.abs(p.y-floorYAt(g,p.z))<0.5?'':', stacked at '+fmtDim(p.y)+'"'}</td>
-      <td><b>${poseText(p).replace(/^./,c=>c.toUpperCase())}</b>${p.rot?' · turned 90°':''}</td>
-      <td style="color:${p.warn?'#b91c1c':'#166534'}">${p.warn? '⚠ '+p.warn : 'OK'}</td>
+      <td><b>${esc(poseText(p).replace(/^./,c=>c.toUpperCase()))}</b>${p.rot?' · turned 90°':''}</td>
+      <td style="color:${p.warn?'#b91c1c':'#166534'}">${p.warn? '⚠ '+esc(p.warn) : 'OK'}</td>
     </tr>`).join('');
   return out + `<div ${forPrint?'class="page-break"':''} style="margin-bottom:18px">
     <h2 style="font-size:15px;font-weight:800;background:#fffbeb;padding:5px 9px;border-left:4px solid #d97706;margin-bottom:8px">

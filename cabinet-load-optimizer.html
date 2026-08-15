@@ -4,11 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Cabinet Load Optimizer</title>
-<script src="https://cdn.tailwindcss.com"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="assets/vendor/tailwindcss-play-2026-08-14.js"></script>
+<script src="assets/vendor/three-r128.min.js"></script>
+<script src="assets/vendor/OrbitControls-r128.js"></script>
 <!-- sql.js: reads a Mozaik JobData.db right in the browser, no server needed -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
+<script src="assets/vendor/sql-wasm-1.10.3.js"></script>
+<script src="load-safety-core.js"></script>
 <style>
   body { margin:0; }
   .tabbtn { padding:.5rem 1rem; border-radius:.375rem .375rem 0 0; font-weight:600; font-size:.875rem; color:#64748b; border-bottom:2px solid transparent; }
@@ -50,6 +51,7 @@
       <div>
         <h1 class="text-lg font-bold leading-tight">Cabinet Load Optimizer</h1>
         <div class="text-[11px] text-slate-400">Mozaik import • 3D nesting • printable load plans</div>
+        <div class="text-[10px] font-bold text-amber-300">WEIGHT UNVALIDATED until every cabinet weight and trailer limit is entered</div>
       </div>
     </div>
     <div class="flex items-center gap-2 flex-wrap">
@@ -57,7 +59,7 @@
       <label class="text-xs text-slate-300">Clearance
         <input type="number" id="gap" value="1" min="0.25" step="0.25" class="!w-16 !bg-slate-800 !border-slate-600 text-white ml-1 inline-block" />"
       </label>
-      <label class="text-xs text-slate-300 flex items-center gap-1" title="Allow a cabinet to be loaded face up (doors toward the ceiling) as a last resort, when it will not go on its side or upright. Face-up cabinets are never put on the floor and never get anything stacked on them. Turn this off to refuse face-up loading entirely.">
+      <label class="text-xs text-slate-300 flex items-center gap-1" title="Allow a cabinet to be loaded face up (doors toward the ceiling) as a last resort, when it will not go on its side or upright. Face-up cabinets are never put on the floor. The V2 safety rules may allow one light, broad piece on the door bank. Turn this off to refuse face-up loading entirely.">
         <input type="checkbox" id="allow-back" checked class="w-4 h-4"> Allow face-up
       </label>
       <label class="text-xs text-slate-300 flex items-center gap-1">
@@ -111,6 +113,7 @@
               <div><span class="lbl">Width"</span><input id="m-w" type="text" placeholder='24 or 34 1/2'></div>
               <div><span class="lbl">Height"</span><input id="m-h" type="text"></div>
               <div><span class="lbl">Depth"</span><input id="m-d" type="text"></div>
+              <div><span class="lbl">Weight lb <span class="normal-case font-normal">(optional)</span></span><input id="m-weight" type="number" min="0.1" step="1"></div>
               <div class="flex items-end pb-1"><label class="text-xs flex gap-1 items-center"><input type="checkbox" id="m-stack" checked class="w-4 h-4"> Can support stacking</label></div>
             </div>
             <div class="text-[10px] text-slate-400 mt-1.5">Leave Room/Cab # blank for trim bundles, loose doors and other packages.</div>
@@ -159,7 +162,7 @@
             </div>
             <div class="overflow-auto max-h-[70vh]">
               <table class="grid" id="cab-table">
-                <thead><tr><th>Room/Cab · Pkg #</th><th>Name</th><th>W"</th><th>H"</th><th>D"</th><th>Description</th><th>Fin. Ends</th><th title="Other cabinets may be stacked on top of this one">Stack On</th><th></th></tr></thead>
+                <thead><tr><th>Room/Cab · Pkg #</th><th>Name</th><th>W"</th><th>H"</th><th>D"</th><th>Weight lb</th><th>Description</th><th>Fin. Ends</th><th title="Other cabinets may be stacked on top of this one">Stack On</th><th></th></tr></thead>
                 <tbody id="cab-tbody"></tbody>
               </table>
             </div>
@@ -246,6 +249,20 @@
               </div>
             </div>
 
+            <!-- Vehicle weight limits -->
+            <div class="mt-4 border-t pt-3">
+              <h3 class="text-xs font-bold text-amber-700 uppercase mb-2">Weight &amp; Axle Check <span class="text-slate-400 normal-case font-normal">— optional, pounds</span></h3>
+              <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+                <div><span class="lbl">Empty trailer weight</span><input id="t-empty-weight" type="number" min="1" step="1"></div>
+                <div><span class="lbl">Measured empty tongue</span><input id="t-empty-tongue" type="number" min="1" step="1"></div>
+                <div><span class="lbl">GVWR</span><input id="t-gvwr" type="number" min="1" step="1"></div>
+                <div><span class="lbl">Axle-group rating</span><input id="t-gawr" type="number" min="1" step="1"></div>
+                <div><span class="lbl">Maximum tongue weight</span><input id="t-max-tongue" type="number" min="1" step="1"></div>
+                <div><span class="lbl">Rear → axle-group center"</span><input id="t-axle-rear" type="number" min="1" step="0.5"></div>
+              </div>
+              <div class="text-[10px] text-slate-500 mt-2">The check uses measured empty trailer reactions plus cabinet weights and their packed centers. Leave blank if unknown; the plan will remain marked unvalidated.</div>
+            </div>
+
             <div class="flex gap-2 mt-5">
               <button class="btn btn-blue" onclick="saveTrailer()">💾 Save Trailer</button>
               <button class="btn btn-gray" onclick="editTrailer(null)">Reset Form</button>
@@ -268,6 +285,7 @@
             <div class="flex justify-between"><span class="text-slate-500">Floor used</span><b id="s-floor">0%</b></div>
             <div class="flex justify-between"><span class="text-slate-500">Volume used</span><b id="s-vol">0%</b></div>
             <div class="flex justify-between"><span class="text-slate-500">Deck (bases upright)</span><b id="s-deck">0</b></div>
+            <div id="s-weight-check" class="mt-2 rounded border border-amber-300 bg-amber-50 p-2 text-[10px] font-bold text-amber-800">Weight check not configured</div>
             <div id="s-poses" class="mt-1.5 pt-1.5 border-t text-[11px] text-slate-600 space-y-0.5"></div>
             <div id="s-faillist" class="mt-2 text-xs text-red-600 max-h-24 overflow-auto"></div>
             <div class="text-[10px] text-slate-400 mt-2 border-t pt-1">Drag: rotate · Right-drag: pan · Scroll: zoom<br>Rear doors = open end (red line)</div>
@@ -275,6 +293,7 @@
         </div>
         <div class="w-full lg:w-72 bg-white rounded-lg shadow p-3 overflow-auto" style="max-height:75vh">
           <div class="font-bold text-sm mb-2">Loading Sequence <span class="text-[10px] font-normal text-slate-400">(front → rear)</span></div>
+          <div class="mb-2 rounded border border-amber-300 bg-amber-50 p-2 text-[10px] font-bold text-amber-800">Confirm the weight panel shows a complete, passing check before travel.</div>
           <div id="seq-list" class="space-y-1 text-xs"></div>
         </div>
       </div>
@@ -299,6 +318,10 @@
 /* =================== STATE =================== */
 const LS = { trailers:'clo_trailers_v1', cabs:'clo_cabs_v1', misc:'clo_misc_v1' };
 let trailers = [], cabinets = [], activeTrailerId = null, results = null, editingTrailerId = null;
+const esc = value => CLOSafety.escapeHTML(value);
+const validId = value => /^[A-Za-z0-9_.:-]+$/.test(String(value||''));
+const MAX_IMPORT_BYTES = 50 * 1024 * 1024;
+const MAX_IMPORT_ITEMS = 2000;
 const ROOM_COLORS = ['#3b82f6','#f97316','#10b981','#8b5cf6','#ef4444','#06b6d4','#eab308','#ec4899','#84cc16','#6366f1'];
 /* Packages (trim bundles, loose doors, misc.) have no room — they share one
    group and a warm grey that is deliberately not in the room palette above. */
@@ -343,7 +366,9 @@ function pullServer(){
   try{
     fetch(SETTINGS_URL).then(r=> r.ok ? r.json() : null).then(s=>{
       if(s && Array.isArray(s.trailers) && s.trailers.length){
-        trailers = s.trailers;
+        const valid = s.trailers.filter(t=>t && validId(t.id) && CLOSafety.validateTrailer(t).length===0);
+        if(!valid.length){ done(); return; }
+        trailers = valid;
         const m = s.misc || {};
         if(m.activeTrailerId) activeTrailerId = m.activeTrailerId;
         if(m.job!=null) el('job-name').value = m.job;
@@ -363,6 +388,8 @@ function pullServer(){
 function loadAll(){
   try{ trailers = JSON.parse(localStorage.getItem(LS.trailers))||[]; }catch(e){ trailers=[]; }
   try{ cabinets = JSON.parse(localStorage.getItem(LS.cabs))||[]; }catch(e){ cabinets=[]; }
+  trailers = Array.isArray(trailers) ? trailers.filter(t=>t && validId(t.id) && CLOSafety.validateTrailer(t).length===0) : [];
+  cabinets = Array.isArray(cabinets) ? cabinets.filter(c=>c && validId(c.id) && CLOSafety.finitePositive(c.w) && CLOSafety.finitePositive(c.h) && CLOSafety.finitePositive(c.d)).slice(0,MAX_IMPORT_ITEMS) : [];
   try{
     const m = JSON.parse(localStorage.getItem(LS.misc))||{};
     activeTrailerId = m.activeTrailerId||null;
@@ -444,6 +471,7 @@ const CSV_FIELDS=[
   ['w','Width',['w','width','wide','widthin','cabinetwidth','wid']],
   ['h','Height',['h','height','high','heightin','cabinetheight','hgt']],
   ['d','Depth',['d','depth','deep','depthin','cabinetdepth','dep']],
+  ['weight','Weight lb',['weight','weightlb','lbs','pounds','mass','cabinetweight']],
   ['desc','Description',['desc','description','type','notes','note','comment','comments','category','roomname']],
   ['fin','Finished Ends',['fin','finends','finishedends','finishends','ends','exposedends','finishedend']],
   ['rc','Room/Cab #',['rc','roomcab','roomcabno','roomcabnumber','label','tag','mark','id','ident','location','loc','position','itemno']],
@@ -500,7 +528,7 @@ function guessMap(rows){
     }
   }
   const seen={};                                        // no two fields on one column
-  for(const k of ['rc','w','h','d','qty','name','fin','desc','room','cab']){
+  for(const k of ['rc','w','h','d','weight','qty','name','fin','desc','room','cab']){
     if(map[k]===undefined) continue;
     if(seen[map[k]]!==undefined) delete map[k]; else seen[map[k]]=k;
   }
@@ -524,7 +552,10 @@ function buildCsvRows(rows, map, hasHeader, scale){
     }
     const nm=g(r,'name'), dsc=g(r,'desc');
     const name = nm || dsc || 'Cabinet';
-    out.push({ qty: parseInt(g(r,'qty'),10)||1, name, w, h, d,
+    const rawQty=parseInt(g(r,'qty'),10)||1;
+    if(rawQty<1 || rawQty>MAX_IMPORT_ITEMS){ errs.push(`Row ${rowNo}: quantity must be between 1 and ${MAX_IMPORT_ITEMS}`); return; }
+    const weight=parseFloat(g(r,'weight'));
+    out.push({ qty: rawQty, name, w, h, d, weight:CLOSafety.finitePositive(weight)?weight:null,
                desc: (dsc===name? '' : dsc), fin:g(r,'fin'), rc: rc || ('CAB'+rowNo) });
   });
   return {rows:out, errs};
@@ -534,14 +565,15 @@ let csvState = null;      // { grid, map, hasHeader, scale, source }
 /* Resolved lazily: MM_TO_IN is declared further down the file. */
 const csvScale = u => u==='mm' ? MM_TO_IN : u==='cm' ? 10*MM_TO_IN : 1;
 
-function csvMsg(html, kind){
-  el('csv-msg').innerHTML = kind==='error' ? `<span class="text-red-600 font-bold">${html}</span>`
-                          : kind==='ok'    ? `<span class="text-emerald-600 font-bold">${html}</span>`
-                          : `<span class="text-slate-500">${html}</span>`;
+function csvMsg(message, kind){
+  const node=el('csv-msg');
+  node.className='text-xs mt-2 '+(kind==='error'?'text-red-600 font-bold':kind==='ok'?'text-emerald-600 font-bold':'text-slate-500');
+  node.textContent=message||'';
 }
 function readCsvText(text, source){
   el('csv-map').classList.add('hidden'); csvState=null;
   if(!text || !text.trim()){ csvMsg('Nothing to read — paste some rows or pick a file.','error'); return; }
+  if(text.length>MAX_IMPORT_BYTES){ csvMsg('That input is larger than the 50 MB safety limit.','error'); return; }
   const grid = parseDelimited(text);
   if(!grid.length){ csvMsg('No rows found in that file.','error'); return; }
   const {map, hasHeader} = guessMap(grid);
@@ -555,7 +587,7 @@ function renderCsvMap(){
   const nCols = Math.max(...grid.map(r=>r.length));
   const label = i => hasHeader ? (grid[0][i]||'').trim() || `Column ${i+1}` : `Column ${i+1}`;
   const opts = sel => `<option value="">&mdash; none &mdash;</option>` +
-    Array.from({length:nCols},(_,i)=>`<option value="${i}" ${sel===i?'selected':''}>${i+1}. ${label(i)}</option>`).join('');
+    Array.from({length:nCols},(_,i)=>`<option value="${i}" ${sel===i?'selected':''}>${i+1}. ${esc(label(i))}</option>`).join('');
 
   const body = hasHeader? grid.slice(1) : grid;
   const {rows:preview, errs} = buildCsvRows(grid, map, hasHeader, csvScale(csvState.scale));
@@ -567,7 +599,7 @@ function renderCsvMap(){
       </div>`).join('');
 
   const prevRows = preview.slice(0,3).map(r=>`<tr>
-      <td>${r.rc}</td><td>${r.name}</td><td>${fmtDim(r.w)}</td><td>${fmtDim(r.h)}</td><td>${fmtDim(r.d)}</td></tr>`).join('');
+      <td>${esc(r.rc)}</td><td>${esc(r.name)}</td><td>${fmtDim(r.w)}</td><td>${fmtDim(r.h)}</td><td>${fmtDim(r.d)}</td></tr>`).join('');
 
   el('csv-map').innerHTML = `
     <div class="flex items-baseline justify-between mb-2">
@@ -601,23 +633,26 @@ function setCsvMap(key, val){
 function commitCsvImport(){
   if(!csvState) return;
   const {rows, errs} = buildCsvRows(csvState.grid, csvState.map, csvState.hasHeader, csvScale(csvState.scale));
+  const requested=rows.reduce((n,r)=>n+r.qty,0);
+  if(cabinets.length+requested>MAX_IMPORT_ITEMS){ csvMsg(`Import would exceed the ${MAX_IMPORT_ITEMS}-item safety limit.`,'error'); return; }
   let added=0;
   rows.forEach(r=>{
     for(let q=0;q<r.qty;q++){
       cabinets.push({ id:'c'+Date.now()+'_'+Math.random().toString(36).slice(2,6),
         rc: r.qty>1 ? r.rc+'.'+(q+1) : r.rc,
-        name:r.name, w:r.w, h:r.h, d:r.d, desc:r.desc, fin:r.fin,
+        name:r.name, w:r.w, h:r.h, d:r.d, weight:r.weight, desc:r.desc, fin:r.fin,
         stackOn: r.h <= 45 });     // bases & uppers can hold weight; talls can't by default
       added++;
     }
   });
   el('csv-map').classList.add('hidden'); csvState=null;
   el('csv-paste').value='';
-  csvMsg(`Imported ${added} cabinet(s).` + (errs.length? ` <span class="text-amber-600 font-normal">${errs.length} row(s) skipped.</span>`:''), 'ok');
+  csvMsg(`Imported ${added} cabinet(s).` + (errs.length? ` ${errs.length} row(s) skipped.`:''), 'ok');
   renderCabs(); saveAll();
 }
 function readCsvFile(file){
   if(!file) return;
+  if(file.size>MAX_IMPORT_BYTES){ csvMsg('That file is larger than the 50 MB safety limit.','error'); return; }
   csvMsg(`Reading ${file.name}\u2026`,'busy');
   const fr=new FileReader();
   fr.onload = () => readCsvText(fr.result, file.name);
@@ -643,7 +678,7 @@ let sqlJsPromise = null;
 function loadSqlJs(){
   if(!sqlJsPromise){
     if(typeof initSqlJs !== 'function') return Promise.reject(new Error('SQLite reader failed to load — check your internet connection.'));
-    sqlJsPromise = initSqlJs({ locateFile: f => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/${f}` });
+    sqlJsPromise = initSqlJs({ locateFile: () => 'assets/vendor/sql-wasm-1.10.3.wasm' });
   }
   return sqlJsPromise;
 }
@@ -666,7 +701,9 @@ function parseJobDb(db){
     const w = frac16((r.W||0)*MM_TO_IN), h = frac16((r.H||0)*MM_TO_IN), d = frac16((r.D||0)*MM_TO_IN);
     const name = r.cabName || 'Cabinet';
     if(w<=0 || h<=0 || d<=0){ skipped.push(`${name} (no size)`); continue; }
-    out.push({ qty: parseInt(r.quan||1,10) || 1,
+    const qty=parseInt(r.quan||1,10) || 1;
+    if(qty<1 || qty>MAX_IMPORT_ITEMS){ skipped.push(`${name} (invalid quantity)`); continue; }
+    out.push({ qty,
                rc: `R${room.num}C${r.cab}`, name, w, h, d,
                desc: r.roomName || room.roomName || r.Type || '',
                fin: FIN_ENDS[r.finEnds] !== undefined ? FIN_ENDS[r.finEnds] : (r.finEnds||'') });
@@ -674,13 +711,14 @@ function parseJobDb(db){
   if(!out.length) throw new Error('No cabinets with valid dimensions found.');
   return { jobName: job.JobName || '', customer: job.Customer || '', rows: out, skipped };
 }
-function dbMsg(html, kind){
-  el('db-msg').innerHTML = kind==='error' ? `<span class="text-red-600 font-bold">${html}</span>`
-                         : kind==='busy'  ? `<span class="text-slate-500">${html}</span>`
-                         : `<span class="text-emerald-600 font-bold">${html}</span>`;
+function dbMsg(message, kind){
+  const node=el('db-msg');
+  node.className='text-xs mt-2 '+(kind==='error'?'text-red-600 font-bold':kind==='busy'?'text-slate-500':'text-emerald-600 font-bold');
+  node.textContent=message||'';
 }
 async function importJobDb(file){
   if(!file) return;
+  if(file.size>MAX_IMPORT_BYTES){ dbMsg('That database is larger than the 50 MB safety limit.','error'); return; }
   dbMsg(`Reading ${file.name}\u2026`, 'busy');
   try{
     const bytes = new Uint8Array(await file.arrayBuffer());
@@ -690,10 +728,13 @@ async function importJobDb(file){
     const SQL = await loadSqlJs();
     const db = new SQL.Database(bytes);
     let parsed; try{ parsed = parseJobDb(db); } finally { db.close(); }
+    const requested=parsed.rows.reduce((n,r)=>n+Math.max(0,Number(r.qty)||0),0);
+    if(cabinets.length+requested>MAX_IMPORT_ITEMS) throw new Error(`Import would exceed the ${MAX_IMPORT_ITEMS}-item safety limit.`);
 
     let added = 0;
     parsed.rows.forEach(r=>{
-      for(let q=0;q<r.qty;q++){
+      const qty=Math.max(0,Number(r.qty)||0);
+      for(let q=0;q<qty;q++){
         cabinets.push({ id:'c'+Date.now()+'_'+Math.random().toString(36).slice(2,6),
           rc: r.qty>1 ? r.rc+'.'+(q+1) : r.rc,
           name:r.name, w:r.w, h:r.h, d:r.d, desc:r.desc, fin:r.fin,
@@ -703,9 +744,8 @@ async function importJobDb(file){
     });
     if(parsed.jobName && !el('job-name').value.trim()) el('job-name').value = parsed.jobName;
 
-    dbMsg(`Imported ${added} cabinet(s)${parsed.jobName? ' from &ldquo;'+parsed.jobName+'&rdquo;':''}.`, 'ok');
-    if(parsed.skipped.length)
-      el('db-msg').innerHTML += `<div class="text-amber-600 font-normal mt-1">Skipped ${parsed.skipped.length}: ${parsed.skipped.join(', ')}</div>`;
+    dbMsg(`Imported ${added} cabinet(s)${parsed.jobName? ' from “'+parsed.jobName+'”':''}.`+
+          (parsed.skipped.length?` Skipped ${parsed.skipped.length} invalid row(s).`:''), 'ok');
     renderCabs(); saveAll();
   }catch(err){
     dbMsg(err.message, 'error');
@@ -739,17 +779,19 @@ function syncStackDefault(){
    grouped and coloured apart via `room`. */
 function addManual(){
   const w=parseDim(el('m-w').value), h=parseDim(el('m-h').value), d=parseDim(el('m-d').value);
+  const rawWeight=parseFloat(el('m-weight').value), weight=CLOSafety.finitePositive(rawWeight)?rawWeight:null;
   const rc=el('m-rc').value.trim(), pkg=el('m-pkg').value.trim(), qty=parseInt(el('m-qty').value)||1;
-  if(isNaN(w)||isNaN(h)||isNaN(d)){ alert('All three dimensions are required.'); return; }
+  if(!CLOSafety.finitePositive(w)||!CLOSafety.finitePositive(h)||!CLOSafety.finitePositive(d)){ alert('All three dimensions must be greater than zero.'); return; }
+  if(qty<1 || qty>MAX_IMPORT_ITEMS || cabinets.length+qty>MAX_IMPORT_ITEMS){ alert(`Quantity must keep the list at ${MAX_IMPORT_ITEMS} items or fewer.`); return; }
   const isPkg = !rc;
   const base = isPkg ? (pkg? 'P'+pkg : 'PKG') : rc;
   for(let q=0;q<qty;q++){
     cabinets.push({ id:'c'+Date.now()+'_'+q, rc: qty>1? base+'.'+(q+1):base,
       name:el('m-name').value||(isPkg?'Package':'Cabinet'),
-      w,h,d, desc:'', fin:'', stackOn: el('m-stack').checked,
+      w,h,d, weight, desc:'', fin:'', stackOn: el('m-stack').checked,
       isPkg, pkg: isPkg? pkg : '', room: isPkg? PKG_ROOM : '' });
   }
-  ['m-name','m-rc','m-pkg','m-w','m-h','m-d'].forEach(i=>el(i).value=''); el('m-qty').value=1;
+  ['m-name','m-rc','m-pkg','m-w','m-h','m-d','m-weight'].forEach(i=>el(i).value=''); el('m-qty').value=1;
   stackTouched = false; syncStackDefault();
   renderCabs(); saveAll();
 }
@@ -787,9 +829,9 @@ function renderCabs(){
   el('cab-count').textContent = cabinets.length+' items';
   el('cab-tbody').innerHTML = cabinets.map(c=>`
     <tr>
-      <td><span class="inline-block w-2.5 h-2.5 rounded-sm mr-1" style="background:${roomColor(c)}"></span><b>${c.rc}</b></td>
-      <td>${c.name}<span class="ml-1 text-[9px] font-bold uppercase rounded px-1 py-0.5 align-middle ${CLASS_BADGE[cabClass(c)]}" title="${CLASS_TIP[cabClass(c)]||''}">${CLASS_LABEL[cabClass(c)]||''}</span></td><td>${fmtDim(c.w)}</td><td>${fmtDim(c.h)}</td><td>${fmtDim(c.d)}</td>
-      <td class="text-slate-500">${c.desc||''}</td><td>${c.fin||''}</td>
+      <td><span class="inline-block w-2.5 h-2.5 rounded-sm mr-1" style="background:${roomColor(c)}"></span><b>${esc(c.rc)}</b></td>
+      <td>${esc(c.name)}<span class="ml-1 text-[9px] font-bold uppercase rounded px-1 py-0.5 align-middle ${CLASS_BADGE[cabClass(c)]}" title="${esc(CLASS_TIP[cabClass(c)]||'')}">${esc(CLASS_LABEL[cabClass(c)]||'')}</span></td><td>${fmtDim(c.w)}</td><td>${fmtDim(c.h)}</td><td>${fmtDim(c.d)}</td><td>${CLOSafety.finitePositive(c.weight)?Math.round(c.weight):'—'}</td>
+      <td class="text-slate-500">${esc(c.desc||'')}</td><td>${esc(c.fin||'')}</td>
       <td class="text-center"><input type="checkbox" ${c.stackOn?'checked':''} onchange="toggleStack('${c.id}')"></td>
       <td><button class="text-red-500 hover:text-red-700 font-bold" onclick="delCab('${c.id}')">✕</button></td>
     </tr>`).join('');
@@ -803,7 +845,7 @@ function renderTrailers(){
     return `<div class="border rounded-lg p-2.5 ${act?'border-blue-600 bg-blue-50':'border-slate-200'}">
       <div class="flex justify-between items-start">
         <div>
-          <div class="font-bold text-sm">${t.name} ${act?'<span class="text-[10px] bg-blue-600 text-white rounded px-1.5 py-0.5 ml-1">ACTIVE</span>':''}</div>
+          <div class="font-bold text-sm">${esc(t.name)} ${act?'<span class="text-[10px] bg-blue-600 text-white rounded px-1.5 py-0.5 ml-1">ACTIVE</span>':''}</div>
           <div class="text-xs text-slate-500">${t.w}"W × ${t.h}"H × ${Math.round(g.totalL)}"L total
             ${t.type==='gooseneck'?' · gooseneck':''}${t.vnose?' · V-nose':''}${t.ww?' · wheel wells':''}</div>
         </div>
@@ -837,6 +879,11 @@ function editTrailer(id){
   el('t-wwd').value=t?(t.wwd||8):8; el('t-wwh').value=t?(t.wwh||12):12; el('t-wwl').value=t?(t.wwl||60):60;
   el('t-wwr').value=t?(t.wwr||60):60; el('t-wwf').value=t&&t.wwf!=null?t.wwf:'';
   el('t-rw').value=t&&t.rw!=null?t.rw:''; el('t-rh').value=t&&t.rh!=null?t.rh:''; el('t-rd').value=t?(t.rd!=null?t.rd:3):3;
+  el('t-empty-weight').value=t&&t.emptyWeight!=null?t.emptyWeight:'';
+  el('t-empty-tongue').value=t&&t.emptyTongue!=null?t.emptyTongue:'';
+  el('t-gvwr').value=t&&t.gvwr!=null?t.gvwr:''; el('t-gawr').value=t&&t.gawr!=null?t.gawr:'';
+  el('t-max-tongue').value=t&&t.maxTongue!=null?t.maxTongue:'';
+  el('t-axle-rear').value=t&&t.axleRear!=null?t.axleRear:'';
   tfRefresh();
 }
 function tfRefresh(){
@@ -873,10 +920,16 @@ function saveTrailer(){
     wwr:+el('t-wwr').value||0, wwf: el('t-wwf').value===''? null : +el('t-wwf').value,
     rw: el('t-rw').value===''? null : +el('t-rw').value,
     rh: el('t-rh').value===''? null : +el('t-rh').value,
-    rd: +el('t-rd').value||0
+    rd: +el('t-rd').value||0,
+    emptyWeight: el('t-empty-weight').value===''? null : +el('t-empty-weight').value,
+    emptyTongue: el('t-empty-tongue').value===''? null : +el('t-empty-tongue').value,
+    gvwr: el('t-gvwr').value===''? null : +el('t-gvwr').value,
+    gawr: el('t-gawr').value===''? null : +el('t-gawr').value,
+    maxTongue: el('t-max-tongue').value===''? null : +el('t-max-tongue').value,
+    axleRear: el('t-axle-rear').value===''? null : +el('t-axle-rear').value
   };
-  if(t.type==='standard' && t.vnose && t.vtip<=t.vstart){ alert('V-nose: "rear → front of V" must be greater than "rear → start of V".'); return; }
-  if(t.type==='gooseneck' && t.h - t.gnh <= 0){ alert('Gooseneck area height must be less than overall interior height.'); return; }
+  const trailerErrors=CLOSafety.validateTrailer(t);
+  if(trailerErrors.length){ alert(trailerErrors.join('\n')); return; }
   const idx = trailers.findIndex(x=>x.id===t.id);
   if(idx>=0) trailers[idx]=t; else { trailers.push(t); activeTrailerId=t.id; }
   editingTrailerId=null; results=null;
@@ -916,13 +969,13 @@ function geomOf(t){
   const rd = (t.rd && t.rd>0) ? t.rd : 0;        // how far forward the lip reaches
   const si = Math.max(0, (t.w - rw)/2);          // inset on each side
   const ti = Math.max(0, (t.h - rh));            // inset at the top
-  if(rd>0 && (si>0.01 || ti>0.01)){
+  if(si>0.01 || ti>0.01){
     const z0 = g.totalL - rd;
-    if(si>0.01){
+    if(rd>0 && si>0.01){
       g.ledges.push({x:0,       y:0, z:z0, w:si, h:t.h, d:rd});
       g.ledges.push({x:t.w-si,  y:0, z:z0, w:si, h:t.h, d:rd});
     }
-    if(ti>0.01) g.ledges.push({x:0, y:t.h-ti, z:z0, w:t.w, h:ti, d:rd});
+    if(rd>0 && ti>0.01) g.ledges.push({x:0, y:t.h-ti, z:z0, w:t.w, h:ti, d:rd});
     g.rear = { w:rw, h:rh, depth:rd, si, ti, z0 };
   }
   return g;
@@ -980,14 +1033,7 @@ const CLASS_TIP = {
    pointing up is a solid gable, so other cabinets can ride on top of them. Face
    up is the last resort for a real cabinet, because the doors end up carrying
    whatever is stacked over them. */
-const POSE_ORDER = {
-  base : ['upright','side','back'],
-  tall : ['side','back','upright'],
-  wall : ['side','upright','back'],
-  flat : ['back','side','upright'],
-  pkg  : ['back','side','upright'],
-  other: ['side','upright','back']
-};
+const POSE_ORDER = CLOSafety.POSE_ORDER;
 function makePoses(cab, kinds){
   const P=[];
   for(const k of kinds){
@@ -1094,6 +1140,7 @@ function canPlace(g,ix,gap,x,y,z,w,h,d,ply,cpose,ccls){
    its neighbours and hard against the side walls — plus a coarse grid so
    awkward gaps still get found. Butting pieces up flush wastes far less room. */
 function tryPlace(cab, cls, poses, g, ix, placed, gap, ply, o){
+  if(!CLOSafety.canEnterRear(cab,g.rear)) return false;
   const wantFloor = o.levels!=='above', wantAbove = o.levels!=='floor';
   const floorFlatOK = o.flatOnFloor || flatOnFloorOK(cls);
 
@@ -1219,9 +1266,9 @@ const placed=[], failed=[], ix=mkIndex();
     const noBack=pref.filter(k=>k!=='back');
     let ok = tryPlace(it.cab,it.cls,makePoses(it.cab,pref),g,ix,placed,gap,ply,O('above'))
           || tryPlace(it.cab,it.cls,makePoses(it.cab,noBack.length?noBack:pref),g,ix,placed,gap,ply,O('any'));
-    if(!ok && allowBack)     // last resort: face up, nothing allowed on top of it
+    if(!ok && allowBack)     // last resort: face up above a supporting deck, never on the floor
       ok = tryPlace(it.cab,it.cls,makePoses(it.cab,['back','side','upright']),g,ix,placed,gap,ply,
-                    O('any',{flatOnFloor:true}));
+                    O('any'));
     if(!ok) failed.push(it.cab);
   }
 
@@ -1268,17 +1315,27 @@ function updateStats(){
   el('s-floor').textContent = Math.round(farea/(g.W*g.totalL)*100)+'%';
   el('s-deck').textContent = onFloor.filter(p=>p.cls==='base'&&p.pose==='upright').length
                              + ' of ' + placed.filter(p=>p.cls==='base').length;
+  const weight=CLOSafety.analyzeWeight(placed,t,g.totalL); results.weight=weight;
+  const weightNode=el('s-weight-check');
+  if(weight.complete){
+    weightNode.className='mt-2 rounded border p-2 text-[10px] font-bold '+(weight.issues.length?'border-red-300 bg-red-50 text-red-700':'border-emerald-300 bg-emerald-50 text-emerald-800');
+    weightNode.textContent=`${Math.round(weight.totalWeight)} lb total · ${Math.round(weight.axleWeight)} lb axle · ${Math.round(weight.tongueWeight)} lb tongue (${Math.round(weight.tonguePct*100)}%)`+
+      (weight.issues.length?' · '+weight.issues.join(', '):' · within configured limits');
+  }else{
+    weightNode.className='mt-2 rounded border border-amber-300 bg-amber-50 p-2 text-[10px] font-bold text-amber-800';
+    weightNode.textContent=`Weight check incomplete: ${weight.unknown.length} loaded item(s) lack weight`+(weight.missing.length?' · missing trailer '+weight.missing.join(', '):'');
+  }
   const tally={};
   for(const p of placed){ const k=poseText(p); tally[k]=(tally[k]||0)+1; }
   el('s-poses').innerHTML = Object.keys(tally).sort().map(k=>
     `<div class="flex justify-between"><span${k.indexOf('FACE UP')===0?' class="text-amber-700 font-semibold"':''}>${k}</span><b>${tally[k]}</b></div>`).join('');
-  el('s-faillist').innerHTML = failed.map(c=>`✗ ${c.rc} — ${c.name} (${fmtDim(c.w)}×${fmtDim(c.h)}×${fmtDim(c.d)})`).join('<br>');
+  el('s-faillist').innerHTML = failed.map(c=>`✗ ${esc(c.rc)} — ${esc(c.name)} (${fmtDim(c.w)}×${fmtDim(c.h)}×${fmtDim(c.d)})`).join('<br>');
   el('seq-list').innerHTML = placed.map(p=>{
     const fromRear = g.totalL-(p.z+p.d);
     const onFloor = Math.abs(p.y-floorYAt(g,p.z))<0.5;
     return `<div class="border rounded p-1.5 flex items-center gap-2" style="border-left:4px solid ${roomColor(p.cab)}">
       <b class="text-slate-400">#${p.seq}</b>
-      <div><b>${p.cab.rc}</b> ${p.cab.name}${isBulky(p.cab)?' <span class="text-[9px] font-bold text-white bg-orange-500 rounded px-1">2+ ppl</span>':''}<br>
+      <div><b>${esc(p.cab.rc)}</b> ${esc(p.cab.name)}${isBulky(p.cab)?' <span class="text-[9px] font-bold text-white bg-orange-500 rounded px-1">2+ ppl</span>':''}<br>
       <span class="text-slate-500">${fmtDim(p.cab.w)}×${fmtDim(p.cab.h)}×${fmtDim(p.cab.d)} · ${fromRear.toFixed(0)}" from rear · ${p.x.toFixed(0)}" from left${onFloor?'':' · stacked at '+p.y.toFixed(0)+'"'} · <b class="${p.pose==='back'&&p.cls!=='flat'&&p.cls!=='pkg'?'text-amber-700':'text-slate-600'}">${poseText(p)}</b>${p.rot?', turned 90°':''}${isFaceUp(p)?' · <b class="text-amber-700">nothing on top</b>':''}</span></div>
     </div>`;
   }).join('');
@@ -1322,9 +1379,21 @@ function makeLabel(text, color){
   sp.scale.set(26,10,1);
   return sp;
 }
+function dispose3D(root){
+  if(!root) return;
+  root.traverse(obj=>{
+    if(obj.geometry && obj.geometry.dispose) obj.geometry.dispose();
+    const mats = obj.material ? (Array.isArray(obj.material)?obj.material:[obj.material]) : [];
+    for(const mat of mats){
+      for(const key of ['map','alphaMap','aoMap','bumpMap','normalMap','roughnessMap','metalnessMap'])
+        if(mat[key] && mat[key].dispose) mat[key].dispose();
+      if(mat.dispose) mat.dispose();
+    }
+  });
+}
 function draw3D(){
   if(!threeReady) return;
-  if(loadGroup) scene.remove(loadGroup);
+  if(loadGroup){ scene.remove(loadGroup); dispose3D(loadGroup); }
   loadGroup = new THREE.Group();
   const t = trailers.find(x=>x.id===activeTrailerId); if(!t){ scene.add(loadGroup); return; }
   const g = results? results.geom : geomOf(t);
@@ -1437,7 +1506,7 @@ function svgFloorplan(level){ // level: 'floor' | 'stacked'
     const c=roomColor(p.cab);
     s += `<rect x="${sx(p.z)}" y="${sy(p.x)}" width="${p.d*sc}" height="${p.w*sc}" fill="${c}" fill-opacity="0.55" stroke="${c}" stroke-width="1.5"/>`;
     const fs = Math.max(6.5, Math.min(11, p.d*sc/4, p.w*sc/3));
-    s += `<text x="${sx(p.z+p.d/2)}" y="${sy(p.x+p.w/2)}" font-size="${fs}" font-weight="bold" fill="#0f172a" text-anchor="middle" dominant-baseline="middle">${p.cab.rc}</text>`;
+    s += `<text x="${sx(p.z+p.d/2)}" y="${sy(p.x+p.w/2)}" font-size="${fs}" font-weight="bold" fill="#0f172a" text-anchor="middle" dominant-baseline="middle">${esc(p.cab.rc)}</text>`;
     s += `<text x="${sx(p.z+p.d/2)}" y="${sy(p.x+p.w/2)+fs}" font-size="${fs*0.7}" fill="#334155" text-anchor="middle" dominant-baseline="middle">#${p.seq}</text>`;
   }
   // ruler along bottom (distance from rear)
@@ -1475,7 +1544,7 @@ function svgElevation(side){ // 'left' | 'right' : cabinets whose center is on t
     const c=roomColor(p.cab);
     s += `<rect x="${sx(p.z)}" y="${sy(p.y+p.h)}" width="${p.d*sc}" height="${p.h*sc}" fill="${c}" fill-opacity="0.55" stroke="${c}" stroke-width="1.5"/>`;
     const fs=Math.max(6.5, Math.min(11, p.d*sc/4, p.h*sc/3));
-    s += `<text x="${sx(p.z+p.d/2)}" y="${sy(p.y+p.h/2)}" font-size="${fs}" font-weight="bold" fill="#0f172a" text-anchor="middle" dominant-baseline="middle">${p.cab.rc}</text>`;
+    s += `<text x="${sx(p.z+p.d/2)}" y="${sy(p.y+p.h/2)}" font-size="${fs}" font-weight="bold" fill="#0f172a" text-anchor="middle" dominant-baseline="middle">${esc(p.cab.rc)}</text>`;
     s += `<text x="${sx(p.z+p.d/2)}" y="${sy(p.y+p.h/2)+fs}" font-size="${fs*0.7}" fill="#334155" text-anchor="middle" dominant-baseline="middle">#${p.seq}</text>`;
   }
   s += `<text x="${sx(g.totalL)+4}" y="${sy(g.H/2)}" font-size="10" fill="#dc2626" transform="rotate(90 ${sx(g.totalL)+4} ${sy(g.H/2)})" text-anchor="middle">REAR</text>`;
@@ -1496,16 +1565,16 @@ function manifestTable(){
     const numLabel = (p.cab.isPkg && !p.cab.pkg) ? '' : p.cab.rc;
     return `<tr>
       <td style="font-weight:bold">${p.seq}</td>
-      <td><span style="display:inline-block;width:9px;height:9px;background:${roomColor(p.cab)};margin-right:4px"></span><b>${numLabel}</b></td>
-      <td>${p.cab.name}</td>
+      <td><span style="display:inline-block;width:9px;height:9px;background:${roomColor(p.cab)};margin-right:4px"></span><b>${esc(numLabel)}</b></td>
+      <td>${esc(p.cab.name)}</td>
       <td>${fmtDim(p.cab.w)} × ${fmtDim(p.cab.h)} × ${fmtDim(p.cab.d)}</td>
       <td>${fmtDim(fromRear)}" fwd of rear doors, ${fmtDim(p.x)}" from left wall</td>
       <td>${level}</td>
-      <td><b>${pose}</b>${p.rot?' · turned 90°':''}${isFaceUp(p)?' <b style="color:#b45309">· DO NOT STACK ON</b>':''}${p.cab.fin&&p.cab.fin!=='None'?' · Fin: '+p.cab.fin:''}</td>
+      <td><b>${esc(pose)}</b>${p.rot?' · turned 90°':''}${isFaceUp(p)?' <b style="color:#b45309">· DO NOT STACK ON</b>':''}${p.cab.fin&&p.cab.fin!=='None'?' · Fin: '+esc(p.cab.fin):''}</td>
     </tr>`;
   }).join('');
   let failHtml = failed.length? `<h3 style="color:#dc2626;margin-top:14px;font-weight:bold">DID NOT FIT (${failed.length})</h3>
-    <ul style="color:#dc2626;font-size:12px;padding-left:18px">${failed.map(c=>`<li>${c.rc} — ${c.name} (${fmtDim(c.w)}×${fmtDim(c.h)}×${fmtDim(c.d)})</li>`).join('')}</ul>`:'';
+    <ul style="color:#dc2626;font-size:12px;padding-left:18px">${failed.map(c=>`<li>${esc(c.rc)} — ${esc(c.name)} (${fmtDim(c.w)}×${fmtDim(c.h)}×${fmtDim(c.d)})</li>`).join('')}</ul>`:'';
   return `<table class="grid" style="font-size:11px"><thead><tr>
     <th>Load #</th><th>Cabinet · Pkg #</th><th>Name</th><th>W×H×D</th><th>Position (measure from rear doors / left wall)</th><th>Level</th><th>Notes</th>
     </tr></thead><tbody>${rows}</tbody></table>` + failHtml;
@@ -1531,7 +1600,7 @@ function loadingOrderHTML(){
       <div style="font-weight:800;font-size:14px;min-width:26px;text-align:right;color:#0f172a">${p.seq}</div>
       <div style="width:11px;height:11px;border-radius:2px;background:${roomColor(p.cab)};flex:none"></div>
       <div style="flex:1;line-height:1.25">
-        <span style="font-weight:700">${p.cab.rc}</span> ${p.cab.name}
+        <span style="font-weight:700">${esc(p.cab.rc)}</span> ${esc(p.cab.name)}
         ${big?'<span style="background:#ea580c;color:#fff;font-size:9px;font-weight:800;padding:1px 6px;border-radius:8px;margin-left:4px;white-space:nowrap">LARGE &middot; 2+ PEOPLE</span>':''}
         ${up?'<span style="background:#b45309;color:#fff;font-size:9px;font-weight:800;padding:1px 6px;border-radius:8px;margin-left:4px;white-space:nowrap">FACE UP &middot; NOTHING ON TOP</span>':''}
         <div style="font-size:11px;color:#475569">${fmtDim(p.cab.w)}&times;${fmtDim(p.cab.h)}&times;${fmtDim(p.cab.d)} &middot; <b>${poseText(p)}</b>${p.rot?', turned 90&deg;':''} &middot; ${fmtDim(fromRear)}" from rear doors, ${fmtDim(p.x)}" from left wall${layer?', sitting '+fmtDim(p.y)+'" up':''}</div>
@@ -1550,8 +1619,8 @@ function plansHTML(forPrint){
   const hasStacked = placed.some(p=>Math.abs(p.y-floorYAt(g,p.z))>=0.5);
   const hdr = `<div style="border-bottom:3px solid #0f172a;padding-bottom:8px;margin-bottom:14px">
     <table style="width:100%"><tr>
-    <td><div style="font-size:22px;font-weight:800">Trailer Load Plan — ${job}</div>
-    <div style="font-size:12px;color:#475569">Trailer: <b>${t.name}</b> (${t.w}"W × ${t.h}"H × ${Math.round(g.totalL)}"L${g.gn?', gooseneck':''}${g.taper?', V-nose':''}${g.wells.length?', wheel wells':''}) ·
+    <td><div style="font-size:22px;font-weight:800">Trailer Load Plan — ${esc(job)}</div>
+    <div style="font-size:12px;color:#475569">Trailer: <b>${esc(t.name)}</b> (${t.w}"W × ${t.h}"H × ${Math.round(g.totalL)}"L${g.gn?', gooseneck':''}${g.taper?', V-nose':''}${g.wells.length?', wheel wells':''}) ·
     Clearance between cabinets: ${results.gap}"${hasStacked&&results.ply?' · '+fmtDim(results.ply)+'" plywood deck between layers':''} · ${placed.length} loaded${failed.length?', <span style="color:#dc2626">'+failed.length+' did not fit</span>':''}</div></td>
     <td style="text-align:right;font-size:11px;color:#64748b">${new Date().toLocaleDateString()}<br>Left wall = your left standing at the rear doors looking forward</td>
     </tr></table></div>`;
@@ -1560,6 +1629,9 @@ function plansHTML(forPrint){
   const deck = placed.filter(p=>Math.abs(p.y-floorYAt(g,p.z))<0.5);
   const faceUp = placed.filter(isFaceUp).length;
   let out = hdr;
+  out += `<div style="border:2px solid #d97706;background:#fffbeb;color:#92400e;border-radius:4px;padding:7px 10px;margin-bottom:12px;font-size:11px;font-weight:800">WEIGHT SAFETY — treat this plan as geometric fit only unless the weight check below is complete and passing. Confirm tow-vehicle limits separately.</div>`;
+  if(results.weight && results.weight.complete) out += `<div style="border:1px solid ${results.weight.issues.length?'#dc2626':'#16a34a'};background:${results.weight.issues.length?'#fef2f2':'#f0fdf4'};border-radius:4px;padding:7px 10px;margin-bottom:12px;font-size:11px;font-weight:700">Weight check: ${Math.round(results.weight.totalWeight)} lb total · ${Math.round(results.weight.axleWeight)} lb axle · ${Math.round(results.weight.tongueWeight)} lb tongue (${Math.round(results.weight.tonguePct*100)}%)${results.weight.issues.length?' · '+esc(results.weight.issues.join(', ')):' · within configured limits'}</div>`;
+  else out += `<div style="border:1px solid #d97706;background:#fffbeb;border-radius:4px;padding:7px 10px;margin-bottom:12px;font-size:11px;font-weight:700;color:#92400e">Weight check incomplete — do not use this plan as proof of payload, axle or tongue compliance.</div>`;
   out += `<div style="border:1px solid #cbd5e1;border-left:4px solid #1e3a8a;background:#f8fafc;border-radius:4px;padding:8px 11px;margin-bottom:14px;font-size:11px;color:#334155;line-height:1.45">
     <b style="font-size:12px">How this load is built</b><br>
     Bottom deck: <b>${deck.filter(p=>p.cls==='base'&&p.pose==='upright').length} base cabinets standing upright</b> — they carry the layers above.
@@ -1578,6 +1650,8 @@ function plansHTML(forPrint){
 function renderPlansPreview(){ el('plans-preview').innerHTML = `<div class="bg-white rounded-lg shadow p-6">${plansHTML(false)}</div>`; }
 function doPrint(){
   if(!results){ alert('Run Optimize Load first.'); return; }
+  if(results.safetyIssues && results.safetyIssues.length){ alert('Resolve the flagged placement safety issues before printing.'); return; }
+  if(results.weight && results.weight.complete && results.weight.issues.length){ alert('The configured weight limits are exceeded. Resolve the weight warnings before printing.'); return; }
   el('print-area').innerHTML = plansHTML(true);
   window.print();
 }

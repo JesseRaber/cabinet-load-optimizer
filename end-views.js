@@ -126,7 +126,7 @@ function endView(which){
       const fs = Math.max(6, Math.min(10, Math.sqrt(area)/3.4));
       const num = numberOf(p);
       const tx = r1(sx(v.cx)), ty = r1(sy(v.cy));
-      if(num) s += `<text x="${tx}" y="${ty}" font-size="${r1(fs)}" font-weight="bold" fill="#0f172a" text-anchor="middle" dominant-baseline="middle">${num}</text>`;
+      if(num) s += `<text x="${tx}" y="${ty}" font-size="${r1(fs)}" font-weight="bold" fill="#0f172a" text-anchor="middle" dominant-baseline="middle">${esc(num)}</text>`;
       if(!num || area >= 620){
         s += `<text x="${tx}" y="${r1(num ? ty+fs : ty)}" font-size="${r1(num ? fs*0.72 : fs)}" fill="#334155" text-anchor="middle" dominant-baseline="middle">#${p.seq}</text>`;
       }
