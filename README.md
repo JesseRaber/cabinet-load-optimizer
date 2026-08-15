@@ -122,7 +122,9 @@ Every constant is a dial in the `V2` block at the top of the file, reachable as 
 
 - `index.html` — a tiny redirect so the Pages root URL opens the app.
 - `cabinet-load-optimizer.html` — the app itself: self-contained, with drag-drop `.db` import, spreadsheet/CSV import, manual entry, 3D + 2D views, the packing engine, and the printable manifest.
-- `manual-layout.js` — the Manual Layout tab: hand placement, pinning, the shared 3D view with click-to-select, and undo/redo. Replaces `optimize()`, `showTab()`, `resize3D()` and `loadingOrderHTML()` at run time and decorates `draw3D()`, `renderCabs()` and `plansHTML()`. Deletes nothing.
+- `clo-utils.js` — context-safe text and attribute escaping shared by the browser UI and security tests.
+- `manual-layout.js` — the Manual Layout tab: hand placement, pinning, 2D and 3D cabinet dragging, and undo/redo. Replaces `optimize()`, `showTab()`, `resize3D()` and `loadingOrderHTML()` at run time and decorates `draw3D()`, `renderCabs()` and `plansHTML()`. Deletes nothing.
+- `drag-3d.js` — pointer hit-testing, OrbitControls handoff, world-plane projection, and the reusable 3D drag ghost.
 - `load-learning.js` — the Tuning tab. Listens for the `clo:optimize` and `clo:edit` events that `manual-layout.js` announces on the document, and turns them into reviewable suggestions.
 - `end-views.js` — the front and back end views described above. Decorates `plansHTML()` to splice the two cross-sections in above the loading order. Reads the finished load and draws it; touches nothing else.
 - `load-rules-v2.js` — the packing engine itself: tighter placement, forward restraint, wall cabinets upside down, and one cabinet allowed on a door bank. Replaces `packLoad()`, `tryPlace()`, `canPlace()`, `makePoses()` and `isSupport()` at run time, and decorates `poseText()`. Deletes nothing. This is the only add-on that changes where cabinets end up.
@@ -137,14 +139,16 @@ The add-ons load at the end of `<body>`, in this order — `load-learning.js` wr
 <script src="manual-layout.js"></script>
 <script src="load-learning.js"></script>
 <script src="end-views.js"></script>
+<script src="drag-3d.js"></script>
 <script src="load-rules-v2.js"></script>
 ```
 
 If you're serving a copy from somewhere that caches aggressively (a NAS, for instance), add a version query string when you update a file so browsers pick up the new one:
 
 ```html
-<script src="manual-layout.js?v=2"></script>
-<script src="load-learning.js?v=1"></script>
-<script src="end-views.js?v=1"></script>
-<script src="load-rules-v2.js?v=1"></script>
+<script src="manual-layout.js?v=3"></script>
+<script src="load-learning.js?v=2"></script>
+<script src="end-views.js?v=2"></script>
+<script src="drag-3d.js?v=2"></script>
+<script src="load-rules-v2.js?v=2"></script>
 ```

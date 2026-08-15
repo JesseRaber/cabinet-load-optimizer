@@ -447,6 +447,7 @@ const CONF_BADGE = {
 };
 
 function renderTuning(){
+  const safeMarkup = value => esc(value).replace(/&lt;(\/?)b&gt;/g, '<$1b>');
   const { runs, edits, bulkUndos, first, last } = collect();
   const cards = analyse();
 
@@ -472,8 +473,8 @@ function renderTuning(){
         const n = Object.keys(r.edits||{}).length;
         return `<tr>
           <td>${new Date(r.at).toLocaleString()}</td>
-          <td>${r.job || '<span class="text-slate-400">—</span>'}</td>
-          <td>${r.trailer ? r.trailer.name : '<span class="text-slate-400">—</span>'}</td>
+          <td>${r.job ? esc(r.job) : '<span class="text-slate-400">—</span>'}</td>
+          <td>${r.trailer ? esc(r.trailer.name) : '<span class="text-slate-400">—</span>'}</td>
           <td>${r.loaded || 0}</td>
           <td>${(r.failed||[]).length}</td>
           <td class="${n?'font-bold':''}">${n}</td>
@@ -487,12 +488,12 @@ function renderTuning(){
     const [cls, label] = CONF_BADGE[c.conf] || CONF_BADGE.watch;
     return `<div class="bg-white rounded-lg shadow p-4 ${c.rule?'border-l-4 border-red-500':''}">
       <div class="flex justify-between items-start gap-3 flex-wrap">
-        <h3 class="font-bold text-sm">${c.rule?'<span class="text-red-600">Shop rule · </span>':''}${c.title}</h3>
+        <h3 class="font-bold text-sm">${c.rule?'<span class="text-red-600">Shop rule · </span>':''}${esc(c.title)}</h3>
         <span class="text-[10px] font-bold uppercase border rounded-full px-2 py-0.5 whitespace-nowrap ${cls}">${label}</span>
       </div>
-      <div class="text-xs text-slate-600 mt-2"><b class="text-slate-800">Counted:</b> ${c.observed}</div>
-      <div class="text-xs text-slate-600 mt-1.5"><b class="text-slate-800">Might mean:</b> ${c.suggest}</div>
-      <div class="text-[11px] text-slate-400 mt-2 pt-2 border-t">Would change: <code>${c.where}</code>
+      <div class="text-xs text-slate-600 mt-2"><b class="text-slate-800">Counted:</b> ${safeMarkup(c.observed)}</div>
+      <div class="text-xs text-slate-600 mt-1.5"><b class="text-slate-800">Might mean:</b> ${safeMarkup(c.suggest)}</div>
+      <div class="text-[11px] text-slate-400 mt-2 pt-2 border-t">Would change: <code>${esc(c.where)}</code>
         · ${c.n} sample(s)${c.share<1?', '+pct(c.share)+' consistent':''}</div>
     </div>`;
   }).join('')

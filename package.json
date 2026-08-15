@@ -1,0 +1,8 @@
+{
+  "name": "cabinet-load-optimizer",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "check": "node --check clo-utils.js && node --check manual-layout.js && node --check load-learning.js && node --check end-views.js && node --check load-rules-v2.js && node --check drag-3d.js"
+  }
+}
