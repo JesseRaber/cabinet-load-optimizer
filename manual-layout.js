@@ -350,13 +350,24 @@ window.optimize = function(){
 
   /* ---- Phase 0: the pins. Checked for problems, then handed to the packer as
      immovable seed boxes so nothing is ever placed through them. ---- */
-  const seed = [], pinIssues = [];
+  let seed = []; const pinIssues = [];
   for(const cab of cabinets){
     if(!cab.pin) continue;
     const p = pinBox(cab);
     const chk = checkPlace(g, seed, gap, p, ply);
     if(!chk.ok){ p.warn = chk.why.join('; '); pinIssues.push({cab, why:chk.why}); }
     seed.push(p);
+  }
+  if(window.CLO_RULES_V2){
+    const state=window.CLO_RULES_V2.analyzeLoadState(g,seed,gap,ply);
+    seed=state.boxes;
+    for(const p of seed){
+      const vs=state.byCabinetId[p.cab.id]||[];
+      if(!vs.length) continue;
+      const why=[...new Set(vs.map(v=>v.message))];
+      p.warn=[p.warn,...why].filter(Boolean).join('; ');
+      pinIssues.push({cab:p.cab,why});
+    }
   }
 
   /* ---- Everything else: the app's own engine packs around them. packLoad()
@@ -598,7 +609,7 @@ function injectUI(){
         <div id="ml-3d-panel" class="bg-slate-800 rounded-lg overflow-hidden relative" style="height:44vh">
           <div id="ml-3d" class="w-full h-full"></div>
           <div class="absolute top-2 left-2 bg-white/90 rounded px-2 py-1 text-[10px] text-slate-600 pointer-events-none">
-            Tap a cabinet to select it · drag to orbit · right-drag to pan · scroll to zoom
+            Drag a cabinet to move it · drag empty space to orbit · right-drag to pan · scroll to zoom
           </div>
         </div>
         <div id="ml-canvas" class="bg-white rounded-lg shadow p-2 overflow-auto"></div>
@@ -833,24 +844,38 @@ function magnet(g, others, box, gap){
   return Object.assign({}, box, { x:rnd(Math.max(0,bx)), z:rnd(Math.max(0,bz)) });
 }
 
-function startDrag(evt, cab, existing){
-  evt.preventDefault();
+function beginDragAt(q, cab, existing){
   const pose = existing ? existing.pose : M.pose;
   const rot  = existing ? existing.rot  : M.rot;
   M.drag = { cab, pose, rot, from:existing||null,
-             grab: existing && overSvg(evt) ? (()=>{ const q=svgPt(evt); return {dz:q.z-existing.z, dx:q.x-existing.x}; })() : null,
+             grab: existing && q ? {dz:q.z-existing.z, dx:q.x-existing.x} : null,
              yIdx: null, moved:false, box:null };
+  return M.drag;
+}
+function startDrag(evt, cab, existing){
+  evt.preventDefault();
+  beginDragAt(existing && overSvg(evt) ? svgPt(evt) : null, cab, existing);
   window.addEventListener('pointermove', onDragMove);
   window.addEventListener('pointerup', onDragUp, {once:true});
 }
-function dragBox(evt, d){
+function v2Check(g, others, gap, box, ply){
+  const legacy=checkPlace(g,others,gap,box,ply);
+  const api=window.CLO_RULES_V2;
+  if(!api) return legacy;
+  const state=api.analyzeLoadState(g,others,gap,ply);
+  const rep=api.canPlace(g,null,gap,box.x,box.y,box.z,box.w,box.h,box.d,
+                         ply,box.pose,cabClass(box.cab||{}),box.cab,state.boxes);
+  if(rep) return legacy;
+  if(legacy.ok) return {ok:false,v2Rejected:true,why:['the packer rules refuse this spot (forward restraint or door limit)'],supported:legacy.supported};
+  return Object.assign({},legacy,{v2Rejected:true});
+}
+function dragBoxAt(q, d){
   const g = M.g, gap = curGap(), ply = curPly();
   const others = results.placed.filter(p=>p.cab.id!==d.cab.id);
   const dim = poseBox(d.cab, d.pose, d.rot);
-  const q = svgPt(evt);
   let box = { x:snapv(q.x - (d.grab? d.grab.dx : dim.w/2)),
               z:snapv(q.z - (d.grab? d.grab.dz : dim.d/2)),
-              y:0, w:dim.w, h:dim.h, d:dim.d, pose:d.pose, rot:d.rot };
+              y:0, w:dim.w, h:dim.h, d:dim.d, pose:d.pose, rot:d.rot, cab:d.cab };
   box.x = Math.max(0, Math.min(box.x, g.W - box.w));
   box.z = Math.max(0, Math.min(box.z, g.totalL - box.d));
   box = magnet(g, others, box, gap);
@@ -860,13 +885,14 @@ function dragBox(evt, d){
   if(d.yIdx!=null && ys[Math.min(d.yIdx, ys.length-1)]!=null){
     chosen = ys[Math.min(d.yIdx, ys.length-1)];
   } else {
-    for(const y of ys){ if(checkPlace(g, others, gap, Object.assign({},box,{y}), ply).ok){ chosen = y; break; } }
+    for(const y of ys){ if(v2Check(g, others, gap, Object.assign({},box,{y}), ply).ok){ chosen = y; break; } }
     if(chosen==null) chosen = ys[0];
   }
   box.y = chosen;
-  const chk = checkPlace(g, others, gap, box, ply);
+  const chk = v2Check(g, others, gap, box, ply);
   return { box, chk, levels:ys };
 }
+function dragBox(evt, d){ return dragBoxAt(svgPt(evt),d); }
 function paintGhost(box, chk){
   const gh = document.getElementById('ml-ghost'), tx = document.getElementById('ml-ghost-t');
   if(!gh) return;
@@ -903,7 +929,7 @@ function onDragUp(evt){
   if(!d) return;
   if(overSvg(evt)){
     const {box, chk} = dragBox(evt, d);
-    if(!chk.ok && (chk.why.includes('taller than the ceiling') || chk.why.some(w=>w.indexOf('wall')>=0 || w.indexOf('rear doors')>=0))){
+    if(!chk.ok && (chk.v2Rejected || chk.why.includes('taller than the ceiling') || chk.why.some(w=>w.indexOf('wall')>=0 || w.indexOf('rear doors')>=0))){
       say('Won\'t fit there: ' + chk.why.join('; '), 'bad'); renderTools(); return;
     }
     M.pose = box.pose; M.rot = box.rot;
@@ -1108,6 +1134,20 @@ window.delCab = function(id){
 };
 const _clearCabs = window.clearCabs;
 window.clearCabs = function(){ M.sel = null; _clearCabs(); };
+
+/* Small, read-mostly bridge used by drag-3d.js. Placement rules and commit
+   ownership stay here so 2D and 3D cannot drift into separate algorithms. */
+window.CLO_ML = {
+  beginDragAt,
+  dragBoxAt,
+  commit,
+  getPickables:()=>M.picks.slice(),
+  getDragState:()=>M.drag,
+  getPlacedBox:cab=>boxOf(cab),
+  getGeometry:()=>M.g,
+  selectCabinet:cab=>{ M.sel={kind:'placed',cab}; },
+  cancelDrag:()=>{ M.drag=null; }
+};
 
 /* ============ boot ============ */
 injectUI();

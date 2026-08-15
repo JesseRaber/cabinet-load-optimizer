@@ -150,6 +150,71 @@
     return bulk(cab) <= V2.doorBulk;
   }
 
+  /* Rebuild the state that is normally accumulated while packLoad() runs.
+     Manual edits and pinned seeds do not pass through that accumulation path,
+     so trusting old carrying/onDoors values can reopen an occupied door bank.
+     Siblings at one height are inspected before any of them consumes capacity,
+     making the result independent of array order. */
+  function analyzeLoadState(g, layout, gap, ply){
+    const levelEps = 0.1, supportTol = 1.25;
+    const boxes = (layout||[]).map(p=>Object.assign({}, p, {carrying:0, onDoors:false}));
+    const violations = [];
+    const add = (code, p, message, support) => violations.push({
+      code, cabinetId:p&&p.cab?p.cab.id:null,
+      supportId:support&&support.cab?support.cab.id:null, message
+    });
+    const sorted = boxes.slice().sort((a,b)=>(a.y-b.y)||(a.z-b.z)||(a.x-b.x));
+    for(let at=0; at<sorted.length; ){
+      const anchor = sorted[at].y, band=[];
+      while(at<sorted.length && Math.abs(sorted[at].y-anchor)<=levelEps) band.push(sorted[at++]);
+      const pending=[];
+      for(const p of band){
+        const fy=floorYAt(g,p.z);
+        if(Math.abs(p.y-fy)<0.5) continue;
+        const area=p.w*p.d;
+        let sup=0, doorSup=0;
+        const rests=[], doorRests=[];
+        for(const q of boxes){
+          if(q===p || q.y>=p.y-levelEps) continue;
+          if(Math.abs(q.y+q.h+ply-p.y)>supportTol) continue;
+          const a=ov(p.x,p.x+p.w,q.x,q.x+q.w)*ov(p.z,p.z+p.d,q.z,q.z+q.d);
+          if(a<=0) continue;
+          const tier=supportTier(q);
+          if(tier===1){ doorSup+=a; doorRests.push(q); }
+          if(freeTier(q)>0){ sup+=a; rests.push(q); }
+        }
+        for(const wl of g.wells){
+          if(Math.abs(wl.y+wl.h-p.y)>supportTol) continue;
+          sup+=ov(p.x,p.x+p.w,wl.x,wl.x+wl.w)*ov(p.z,p.z+p.d,wl.z,wl.z+wl.d);
+        }
+        if(sup<area*0.6) add('UNSUPPORTED',p,'nothing solid underneath');
+        if(doorSup>0){
+          p.onDoors=true;
+          if(!mayRideOnDoors(p.cab,p.cls,p.pose)) add('DOOR_PIECE',p,'this piece may not ride on cabinet doors');
+          if(sup<area*V2.doorCover) add('DOOR_COVER',p,'not enough of this piece is supported over the door bank');
+          for(const q of doorRests){
+            if(bulk(p.cab||{w:0,h:0,d:0})>bulk(q.cab||{w:0,h:0,d:0})*V2.doorRatio)
+              add('DOOR_BULK',p,'piece is too large for the door bank beneath it',q);
+          }
+        }
+        pending.push({p,rests,doorRests});
+      }
+      for(const r of pending) for(const q of r.doorRests){
+        q.carrying=(q.carrying||0)+1;
+        if(q.carrying>1) add('DOOR_CAPACITY',r.p,'more than one piece is resting on this door bank',q);
+      }
+    }
+    for(const p of boxes){
+      if(Math.abs(p.y-floorYAt(g,p.z))<0.5) continue;
+      const near=boxes.filter(q=>q!==p);
+      if(!foreHeld(g,near,p.x,p.y,p.z,p.w,p.h,p.d,gap,ply,V2.foreRun))
+        add('FORWARD_RESTRAINT',p,'elevated piece is not restrained toward the trailer nose');
+    }
+    const byCabinetId={};
+    for(const v of violations) if(v.cabinetId) (byCabinetId[v.cabinetId]=byCabinetId[v.cabinetId]||[]).push(v);
+    return {boxes,violations,byCabinetId};
+  }
+
   /* Will it still be caught if it shifts toward the nose?
      Either something solid sits ahead of it, or the deck underneath keeps
      running forward far enough that a shift leaves it still supported. */
@@ -531,6 +596,8 @@
   window.freeTier    = freeTier;
   window.isFaceUp    = isFaceUp;
   window.LOAD_RULES_V2 = V2;          // tunable from the browser console
+  window.CLO_RULES_V2 = { canPlace, analyzeLoadState, supportTier, freeTier, isFaceUp, constants:V2 };
+  document.dispatchEvent(new CustomEvent('clo:rules-ready'));
 
   /* ---- tell the crew when a wall cabinet is on its head, and which
           pieces are floating and need blocking ------------------------- */
