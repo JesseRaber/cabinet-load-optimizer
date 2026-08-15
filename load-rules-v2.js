@@ -16,8 +16,8 @@
    Decorates: poseText().
    Reuses unchanged: geomOf(), cabClass(), availWidthAt(), floorYAt(),
                      mkIndex(), idxAdd(), idxNear(), boxesOverlapXZ/Y().
-   POSE_ORDER is a byte-for-byte copy of the one in the app, so the Tuning tab
-   still describes what the packer is actually doing.
+   POSE_ORDER comes from load-safety-core.js, so the fallback engine, V2 and the
+   Tuning tab all describe the same pose preferences.
 
    ---------------------------------------------------------------------
    WHAT CHANGED, AND WHY
@@ -88,14 +88,8 @@
     zGrid     : 6       // fallback sweep spacing along the trailer (in)
   };
 
-  const POSE_ORDER = {
-    base : ['upright','side','back'],
-    tall : ['side','back','upright'],
-    wall : ['side','upright','back'],
-    flat : ['back','side','upright'],
-    pkg  : ['back','side','upright'],
-    other: ['side','upright','back']
-  };
+  const POSE_ORDER = CLOSafety.POSE_ORDER;
+  window.CLO_POSE_ORDER = POSE_ORDER;
 
   /* A wall cabinet's bottom is finished and its top is not, so when one stands
      upright it goes on its head — unfinished top down, finished bottom up. Same
@@ -268,9 +262,12 @@
 
     if(supDoors > 0){
       if(!ccab || !mayRideOnDoors(ccab, ccls, cpose)) return null;
-      if(sup < area*V2.doorCover) return null;         // spread across the door bank
       for(const p of rests){
         if(freeTier(p)!==1) continue;
+        /* The documented 85% rule applies to the door BANK, not to the
+           footprint of the piece above it. A small piece on one corner must
+           not pass merely because its own small footprint is fully supported. */
+        if(!CLOSafety.coversDoorBank(box,p,V2.doorCover)) return null;
         if(bulk(ccab) > bulk(p.cab||{w:0,h:0,d:0}) * V2.doorRatio) return null;
       }
       rep.onDoors = true;
@@ -281,6 +278,37 @@
 
     rep.sup = sup; rep.cover = Math.min(1, sup/area); rep.rests = rests; rep.fore = true;
     return rep;
+  }
+
+  /* Shared validator for hand placements and pinned seeds. It deliberately
+     calls the same canPlace() used by the optimizer so V2 safety rules cannot
+     drift away from the Manual Layout tab again. */
+  function validatePlacement(g, others, gap, box, ply, standMargin){
+    const cls=box.cls || cabClass(box.cab||{}), cab=box.cab||{};
+    const fy=floorYAt(g,box.z);
+    if(isFaceUp({pose:box.pose,cls}) && Math.abs(box.y-fy)<0.5)
+      return {ok:false, reason:'real cabinets cannot ride face up on the floor'};
+    if(box.pose==='upright' && g.H-box.y < Math.hypot(cab.h||box.h,cab.d||box.d)+(standMargin||0)-0.01)
+      return {ok:false, reason:'not enough clearance to stand this cabinet upright'};
+    if(!CLOSafety.canEnterRear(cab,g.rear))
+      return {ok:false, reason:'cabinet cannot pass through the rear door opening'};
+    const ix=mkIndex();
+    for(const p of others) idxAdd(ix,p);
+    const rep=canPlace(g,ix,gap,box.x,box.y,box.z,box.w,box.h,box.d,ply,box.pose,cls,cab);
+    return rep ? {ok:true, rep} : {ok:false, reason:'placement violates the active V2 support, restraint or door-bank rules'};
+  }
+
+  function validateSeedLayout(g, seed, gap, ply, standMargin){
+    const ordered=[...seed].sort((a,b)=>a.y-b.y || a.z-b.z || a.x-b.x), accepted=[], issues=[];
+    for(const p of ordered){ delete p.carrying; p.onDoors=false; p.flip=(p.cls==='wall'&&p.pose==='upright'); }
+    for(const p of ordered){
+      const chk=validatePlacement(g,accepted,gap,p,ply,standMargin);
+      if(!chk.ok){ issues.push({cab:p.cab, placement:p, reason:chk.reason}); continue; }
+      p.onDoors=!!chk.rep.onDoors;
+      for(const support of chk.rep.rests||[]) if(isFaceUp(support)) support.carrying=(support.carrying||0)+1;
+      accepted.push(p);
+    }
+    return {ok:issues.length===0, accepted, issues};
   }
 
   /* Score a legal spot. Lower is better: further back and higher up cost, and
@@ -305,6 +333,7 @@
      found. Every candidate within `zWindow` of the frontmost legal one is
      scored, and the snuggest wins. */
   function tryPlace(cab, cls, poses, g, ix, placed, gap, ply, o){
+    if(!CLOSafety.canEnterRear(cab,g.rear)) return false;
     const wantFloor = o.levels!=='above', wantAbove = o.levels!=='floor';
     const floorFlatOK = o.flatOnFloor || flatOnFloorOK(cls);
 
@@ -437,7 +466,11 @@
     const SC=opt.standMargin, allowBack=opt.allowBack!==false;
     const allowDoorDeck = opt.allowDoorDeck!==false;
     const placed=[], failed=[], ix=mkIndex();
-    if(opt.seed) for(const p of opt.seed){ placed.push(p); idxAdd(ix,p); }
+    if(opt.seed && opt.seed.length){
+      const checked=validateSeedLayout(g,opt.seed,gap,ply,SC);
+      if(!checked.ok) return {placed:[],failed:[...cabinets],invalidSeeds:checked.issues};
+      for(const p of checked.accepted){ placed.push(p); idxAdd(ix,p); }
+    }
     const vol=c=>c.w*c.h*c.d;
     const byVol =(a,b)=>vol(b.cab)-vol(a.cab);
     const byWide=(a,b)=>b.cab.w-a.cab.w || vol(b.cab)-vol(a.cab);
@@ -481,7 +514,7 @@
             || tryPlace(it.cab,it.cls,makePoses(it.cab,noBack.length?noBack:pref,it.cls),g,ix,placed,gap,ply,O('any'));
       if(!ok && allowBack)
         ok = tryPlace(it.cab,it.cls,makePoses(it.cab,['back','side','upright'],it.cls),g,ix,placed,gap,ply,
-                      O('any',{flatOnFloor:true}));
+                      O('any'));
       if(!ok) stillOut.push(it);
     }
 
@@ -491,7 +524,7 @@
       if(allowDoorDeck && allowStack){
         const pref=(POSE_ORDER[it.cls]||POSE_ORDER.other).filter(k=>allowBack||k!=='back');
         ok = tryPlace(it.cab,it.cls,makePoses(it.cab,pref,it.cls),g,ix,placed,gap,ply,
-                      O('any',{doorDeck:true,flatOnFloor:true}));
+                      O('any',{doorDeck:true}));
       }
       if(!ok) failed.push(it.cab);
     }
@@ -530,6 +563,8 @@
   window.supportTier = supportTier;
   window.freeTier    = freeTier;
   window.isFaceUp    = isFaceUp;
+  window.validatePlacementV2 = validatePlacement;
+  window.validateSeedLayoutV2 = validateSeedLayout;
   window.LOAD_RULES_V2 = V2;          // tunable from the browser console
 
   /* ---- tell the crew when a wall cabinet is on its head, and which

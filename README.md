@@ -16,6 +16,13 @@ A browser-based 3D load optimizer for custom cabinet jobs. Load a job, pick a tr
 
 Everything runs client-side. The site is just static files on GitHub Pages — no server required.
 
+> **Safety boundary:** the optimizer validates geometric fit, support, restraint,
+> rear-door entry and the configured stacking rules. When every loaded cabinet
+> has a weight and the trailer's measured empty reactions and ratings are entered,
+> it also checks total, axle-group and tongue loads. Until those inputs are
+> complete, the app and every printed plan remain clearly marked unvalidated.
+> Tow-vehicle ratings still have to be confirmed independently.
+
 ## How the load is built
 
 A short version of this lives in the app itself, under the collapsible **How the Load Gets Built** panel at the bottom of the Cabinets tab.
@@ -46,7 +53,7 @@ Two more rules apply to every piece:
 - **The snuggest spot wins.** Rather than taking the first position that fits, the packer looks at everything within a short window of the frontmost one and keeps whichever has the most contact with its neighbours, the walls and the deck under it. A piece that still ends up with air on *both* sides is marked **block it** on the manifest — the packer is telling you it could not wedge that one in, and the crew needs to shim or strap it.
 - **Nothing can slide forward and drop.** A load shifts toward the nose under braking, so a piece off the floor has to either butt something ahead of it or sit on a deck that keeps running forward far enough to catch it if it moves.
 
-The rules live in two places: `POSE_ORDER` and `packLoad()` in `cabinet-load-optimizer.html`, and `load-rules-v2.js`, which replaces the packing engine at run time. **`load-rules-v2.js` is the only add-on that changes how a load is packed** — the other three draw, arrange or report. Remove its `<script>` tag and the app falls straight back to the engine in the HTML.
+The active engine lives in `load-rules-v2.js`, which replaces the fallback packing engine in `cabinet-load-optimizer.html` at run time. Both engines read the one pose preference table in `load-safety-core.js`; V2 exposes it as `window.CLO_POSE_ORDER`, so the Tuning tab reads the same order the live packer uses. Remove the V2 `<script>` tag and the app falls back to the simpler engine in the HTML.
 
 ## Checking the cross-section — the end views
 
@@ -70,7 +77,7 @@ Sometimes you know where a piece has to go. The **Manual Layout** tab lets you p
 - **Click a cabinet in the 3D view** to select it, then reorient it with the buttons: turn 90°, change how it lies, move it up or down a layer, or nudge it fore/aft and side to side.
 - **Anything you place by hand is pinned** (📌). Press **Optimize Load** and the packer fills the trailer around the pinned pieces without moving them.
 - **Undo and redo** cover every hand placement in the session — buttons, or Ctrl+Z / Ctrl+Shift+Z.
-- Placements are checked as you make them. A box that won't fit, overlaps something, or would end up resting on another cabinet's doors is outlined in red and the reason is spelled out.
+- Placements are checked by the same V2 validator used by automatic packing. A box that will not fit, cannot enter through the rear opening, lacks support/restraint, or violates the one-piece door-bank rule is refused rather than becoming a printable pin. Optimize also stops if an older saved pin fails the current rules.
 
 Keys, while the tab is open: **R** turn 90° · **P** change how it lies · **[** / **]** down / up a layer · arrow keys nudge · **Backspace** take it back out · **Esc** deselect.
 
@@ -84,7 +91,7 @@ Every time you press Optimize Load, the app records the answer the packer gave. 
 
 What it looks for:
 
-- A kind of cabinet whose **pose** you keep changing (→ `POSE_ORDER`)
+- A kind of cabinet whose **pose** you keep changing (→ `CLOSafety.POSE_ORDER` in `load-safety-core.js`)
 - A kind you keep **turning 90°** (→ the variant order in `makePoses()`)
 - A kind you keep moving **between the floor and the stacked layer** (→ the phase order in `packLoad()`)
 - A consistent **shove fore/aft or side to side** for one kind (→ the sort comparators)
@@ -111,6 +118,19 @@ Measured on a real 83-piece job in a 28' gooseneck: 71 cabinets loaded became 79
 
 Every constant is a dial in the `V2` block at the top of the file, reachable as `window.LOAD_RULES_V2` in the browser console, so you can re-run a real job and compare without editing anything. Two of them are judgement calls rather than measurements: `doorBulk` (16,000 cubic inches, roughly a wall cabinet) and `foreRun` (10 inches of deck ahead of a stacked piece).
 
+## Weight and axle check
+
+Cabinets may carry an optional weight in pounds through manual entry or a
+spreadsheet `Weight`/`Weight lb` column. A trailer profile may store its measured
+empty weight and empty tongue weight, GVWR, axle-group rating, maximum tongue
+weight, and axle-group center measured forward from the rear doors.
+
+When every loaded item and all six trailer values are present, the app combines
+the measured empty reactions with cargo moments at the packed cabinet centers.
+It reports total, axle and tongue load and blocks printing when a configured
+limit is exceeded or tongue reaction is non-positive. Missing inputs leave the
+plan visibly unvalidated rather than estimating a cabinet's weight from volume.
+
 ## Notes
 
 - Room/cabinet IDs come out as `R{room}C{cab}` (e.g. `R1C5`), matching Mozaik.
@@ -121,11 +141,14 @@ Every constant is a dial in the `V2` block at the top of the file, reachable as 
 ## Files
 
 - `index.html` — a tiny redirect so the Pages root URL opens the app.
-- `cabinet-load-optimizer.html` — the app itself: self-contained, with drag-drop `.db` import, spreadsheet/CSV import, manual entry, 3D + 2D views, the packing engine, and the printable manifest.
+- `cabinet-load-optimizer.html` — the app itself: self-contained, with drag-drop `.db` import, spreadsheet/CSV import, manual entry, 3D + 2D views, the fallback packing engine, and the printable manifest.
+- `load-safety-core.js` — shared pure helpers for escaping imported text, trailer validation, rear-door feasibility and door-bank coverage. This file is also exercised directly by the regression tests.
 - `manual-layout.js` — the Manual Layout tab: hand placement, pinning, the shared 3D view with click-to-select, and undo/redo. Replaces `optimize()`, `showTab()`, `resize3D()` and `loadingOrderHTML()` at run time and decorates `draw3D()`, `renderCabs()` and `plansHTML()`. Deletes nothing.
 - `load-learning.js` — the Tuning tab. Listens for the `clo:optimize` and `clo:edit` events that `manual-layout.js` announces on the document, and turns them into reviewable suggestions.
 - `end-views.js` — the front and back end views described above. Decorates `plansHTML()` to splice the two cross-sections in above the loading order. Reads the finished load and draws it; touches nothing else.
 - `load-rules-v2.js` — the packing engine itself: tighter placement, forward restraint, wall cabinets upside down, and one cabinet allowed on a door bank. Replaces `packLoad()`, `tryPlace()`, `canPlace()`, `makePoses()` and `isSupport()` at run time, and decorates `poseText()`. Deletes nothing. This is the only add-on that changes where cabinets end up.
+- `assets/vendor/` — pinned browser dependencies used by the static app, kept locally so a NAS/offline deployment does not depend on live CDNs.
+- `tests/` — Node regression checks for the safety helpers, critical source invariants and script syntax.
 
 The add-ons are all optional. Remove a `<script>` tag and that feature is gone; the app underneath is untouched.
 
