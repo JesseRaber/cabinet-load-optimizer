@@ -1,5 +1,5 @@
 /* =====================================================================
-   load-rules-v2.js  —  tighter loads, restrained loads, one layer on doors
+   load-rules-v2.js  —  tighter loads, restrained loads, protected face-up stacks
 
    A drop-in add-on for cabinet-load-optimizer.html. It replaces the packing
    engine at run time and deletes nothing. Remove the <script> tag and the app
@@ -39,12 +39,11 @@
       not, so one standing upright goes on its head, unfinished top to the deck.
       Same box, same space — it only changes what the printout tells the crew.
 
-   5. ONE CABINET MAY RIDE ON DOORS. A face-up cabinet can carry exactly one
-      piece, that piece carries nothing itself, and it has to sit on at least
-      85% of the door bank so the load spreads. Bases standing upright and
-      anything over ~16,000 cubic inches still stay off doors entirely. Once a
-      door bank has its one piece the airspace over it closes, so nothing can
-      overhang onto it either.
+   5. PROTECTED FACE-UP STACKS. A real cabinet never lies face up on the floor.
+      Compatible shallow wall/hutch cabinets may form up to three face-up levels
+      when every interface satisfies independent rider-support and door-bank-
+      coverage thresholds, compatible bulk, and forward restraint. The crew must
+      place padding, blankets, or foam between protected cabinet surfaces.
 
    6. A BAY FOR THE LONG TALLS. A tall cabinet wider than the trailer has to lie
       lengthwise, so it needs a clear run of 8-9 feet. If the bases take the
@@ -83,6 +82,11 @@
     // Explicit shop rule: a door rider must satisfy BOTH independent 85% tests.
     doorRiderSupport : 0.85, // percentage of the rider's own footprint that must be supported
     doorBankCoverage : 0.85, // percentage of each underlying face-up door bank that the rider must cover
+    maxFaceUpStackLevels : 3, // maximum count of real cabinets in one protected face-up stack
+    protectedFaceUpMaxCabinetDepth : 18, // only shallow wall/hutch-style cabinets enter the protected-stack discovery pass
+    minProtectedFaceUpStackDiscoveryCount : 3, // do not spend face-up poses unless a multi-level protected stack is possible
+    faceUpStackBulkRatio : 1.0, // protected face-up upper cabinet may not be bulkier than the cabinet beneath it
+    maxFreeStandingSlenderness : 12, // maximum upright height / narrowest floor-support dimension without proven bracing
     doorBulk  : 16000,  // in^3 — biggest piece allowed to ride on doors
     doorRatio : 1.0,    // and no bulkier than the cabinet whose doors it rides on
     tallBays  : true,   // give long tall cabinets their own bay before the bases scatter the floor
@@ -120,30 +124,47 @@
     return P;
   }
 
+  function faceUpStackLevel(p){
+    return isFaceUp(p) ? (p.faceUpStackLevel || 1) : 0;
+  }
+
   /* How much can ride on this piece?
        2 = a full deck — end panel up, a flagged base, or trim lying flat
-       1 = doors up — ONE piece, and that piece carries nothing
+       1 = face-up doors — one immediate rider; a compatible face-up rider may
+           become the next protected level, up to maxFaceUpStackLevels
        0 = nothing                                                          */
   function supportTier(p){
     if(!p) return 0;
     const c = p.cab || {};
-    if(p.onDoors)       return 0;               // the one layer over a door bank ends the column
+    if(p.onDoors && !isFaceUp(p)) return 0; // ordinary door riders still end their column
     if(p.cls==='flat')  return p.h <= 3.01 ? 2 : 0;
     if(p.cls==='pkg')   return c.stackOn ? 2 : 0;
-    if(p.pose==='back') return 1;               // doors up — one piece, nothing above it
+    if(p.pose==='back') return faceUpStackLevel(p) < V2.maxFaceUpStackLevels ? 1 : 0;
     if(p.pose==='side') return 2;               // end panel up: the strongest way to stack
     return c.stackOn ? 2 : 0;                   // upright — bases yes, talls no
   }
 
   /* What it can still take, as opposed to what it is structurally able to carry.
-     Kept separate so isSupport() means the same thing before and after packing —
-     the Manual Layout tab and the printout both re-ask it later. */
+     A face-up cabinet may have only one direct rider; the rider can continue the
+     protected stack only when it is itself compatible face-up and below the cap. */
   function freeTier(p){
     const t = supportTier(p);
     return (t===1 && (p.carrying||0) >= 1) ? 0 : t;
   }
 
   function isSupport(p){ return supportTier(p) > 0; }
+
+  /* This is a conservative pose-selection guard, not a transport-dynamics model.
+     It applies only to an upright piece standing directly on the trailer floor;
+     no bracing exception is inferred in this first implementation. */
+  function isFreeStandingUprightStable(w,h,d){
+    const support=Math.min(w,d);
+    return support>0 && h/support <= V2.maxFreeStandingSlenderness;
+  }
+
+  function mayFormProtectedFaceUpStack(cab, cls){
+    return (cls==='wall' || cls==='tall') && cab && cab.d<=V2.protectedFaceUpMaxCabinetDepth;
+  }
 
   /* Is this piece allowed to sit on a cabinet's doors at all? */
   function mayRideOnDoors(cab, cls, pose){
@@ -191,17 +212,31 @@
         }
         if(sup<area*0.6) add('UNSUPPORTED',p,'nothing solid underneath');
         if(doorSup>0){
+          const protectedFaceUpStack=isFaceUp(p) && doorRests.length>0;
           p.onDoors=true;
-          if(!mayRideOnDoors(p.cab,p.cls,p.pose)) add('DOOR_PIECE',p,'this piece may not ride on cabinet doors');
+          if(!protectedFaceUpStack && !mayRideOnDoors(p.cab,p.cls,p.pose))
+            add('DOOR_PIECE',p,'this piece may not ride on cabinet doors');
           if(sup<area*V2.doorRiderSupport)
             add('DOOR_RIDER_SUPPORT',p,'less than the required rider footprint is supported over the door bank');
+          let nextFaceUpLevel=0;
           for(const q of doorRests){
             const doorArea=q.w*q.d;
             const doorCoverage=doorArea>0 ? ov(p.x,p.x+p.w,q.x,q.x+q.w)*ov(p.z,p.z+p.d,q.z,q.z+q.d)/doorArea : 0;
             if(doorCoverage<V2.doorBankCoverage)
               add('DOOR_BANK_COVERAGE',p,'rider does not cover the required share of the door bank beneath it',q);
-            if(bulk(p.cab||{w:0,h:0,d:0})>bulk(q.cab||{w:0,h:0,d:0})*V2.doorRatio)
+            if(protectedFaceUpStack){
+              nextFaceUpLevel=Math.max(nextFaceUpLevel, faceUpStackLevel(q)+1);
+              q.protectedFaceUpStack=true;
+              if(bulk(p.cab||{w:0,h:0,d:0})>bulk(q.cab||{w:0,h:0,d:0})*V2.faceUpStackBulkRatio)
+                add('FACE_UP_STACK_BULK',p,'face-up stack rider is bulkier than the cabinet beneath it',q);
+            } else if(bulk(p.cab||{w:0,h:0,d:0})>bulk(q.cab||{w:0,h:0,d:0})*V2.doorRatio)
               add('DOOR_BULK',p,'piece is too large for the door bank beneath it',q);
+          }
+          if(protectedFaceUpStack){
+            p.faceUpStackLevel=nextFaceUpLevel;
+            p.protectedFaceUpStack=true;
+            if(nextFaceUpLevel>V2.maxFaceUpStackLevels)
+              add('FACE_UP_STACK_DEPTH',p,'protected face-up stack exceeds the configured depth limit');
           }
         }
         pending.push({p,rests,doorRests});
@@ -266,6 +301,7 @@
     if(x < wr.min-eps || x+w > wr.max+eps) return null;
     const box={x,y,z,w,h,d};
     const floorY=floorYAt(g,z);
+    if(cpose==='upright' && Math.abs(y-floorY)<0.5 && !isFreeStandingUprightStable(w,h,d)) return null;
     if(cpose==='back' && Math.abs(y-floorY)<0.5 && !flatOnFloorOK(ccls)) return null;
     for(const wl of g.wells)  if(boxesOverlapXZ(box,wl,0) && boxesOverlapY(box,wl)) return null;
     if(g.ledges) for(const ob of g.ledges) if(boxesOverlapXZ(box,ob,0) && boxesOverlapY(box,ob)) return null;
@@ -274,19 +310,10 @@
     for(let i=0;i<near.length;i++){ const p=near[i];
       if(boxesOverlapY(box,p) && boxesOverlapXZ(box,p,gap)) return null; }
 
-    /* A face-up cabinet may carry ONE piece. Anything more than that, or anything
-       too heavy, still has to stay off the doors. */
+    /* A face-up cabinet can continue a protected stack only through its one
+       direct compatible face-up rider. Ordinary riders retain the old one-layer
+       behavior through supportTier/freeTier. */
     const cIsFaceUp = (cpose==='back' && !flatOnFloorOK(ccls));
-    if(cIsFaceUp){
-      for(let i=0;i<near.length;i++){ const p=near[i];
-        if(p.y < y+h+ply+1.0 && p.y > y+h-0.6 && boxesOverlapXZ(box,p,0)) return null; }
-    }
-    /* Anything sitting at the top of a face-up cabinet lands on its doors, whether
-       that cabinet is what is really holding it up or it merely overhangs. Once a
-       door bank has its one piece, the airspace over it closes for good. */
-    for(let i=0;i<near.length;i++){ const p=near[i];
-      if(!isFaceUp(p) || (p.carrying||0) < 1) continue;
-      if(y < p.y+p.h+ply+1.0 && y > p.y+p.h-0.6 && boxesOverlapXZ(box,p,0)) return null; }
 
     const fy = floorYAt(g,z);
     const tol = gap + 0.75;
@@ -316,7 +343,8 @@
     const waste = dead(slotL) + dead(slotR);
     const loose = (slotL > tol && slotR > tol);   // free either side — needs blocking
 
-    const rep = { sup:0, cover:1, cSide, cEnd, waste, onDoors:false, rests:[] };
+    const rep = { sup:0, cover:1, cSide, cEnd, waste, onDoors:false, rests:[],
+                  protectedFaceUpStack:false, faceUpStackLevel:0, faceUpSupports:[] };
 
     if(Math.abs(y-fy) < 0.5){                    // on the floor / gooseneck deck
       rep.fore = true;
@@ -345,16 +373,25 @@
     if(sup < area*0.6) return null;
 
     if(supDoors > 0){
-      if(!ccab || !mayRideOnDoors(ccab, ccls, cpose)) return null;
+      const doorRests=rests.filter(p=>freeTier(p)===1);
+      const protectedFaceUpStack=cIsFaceUp && doorRests.length>0;
+      if(!ccab || (!protectedFaceUpStack && !mayRideOnDoors(ccab, ccls, cpose))) return null;
       if(sup < area*V2.doorRiderSupport) return null;  // rider must be sufficiently supported
-      for(const p of rests){
-        if(freeTier(p)!==1) continue;
+      let nextFaceUpLevel=0;
+      for(const p of doorRests){
         const doorArea=p.w*p.d;
         const doorCoverage=doorArea>0 ? ov(x,x+w,p.x,p.x+p.w)*ov(z,z+d,p.z,p.z+p.d)/doorArea : 0;
         if(doorCoverage < V2.doorBankCoverage) return null; // rider must also cover this door bank
-        if(bulk(ccab) > bulk(p.cab||{w:0,h:0,d:0}) * V2.doorRatio) return null;
+        if(protectedFaceUpStack){
+          nextFaceUpLevel=Math.max(nextFaceUpLevel, faceUpStackLevel(p)+1);
+          if(bulk(ccab) > bulk(p.cab||{w:0,h:0,d:0}) * V2.faceUpStackBulkRatio) return null;
+        } else if(bulk(ccab) > bulk(p.cab||{w:0,h:0,d:0}) * V2.doorRatio) return null;
       }
+      if(protectedFaceUpStack && nextFaceUpLevel>V2.maxFaceUpStackLevels) return null;
       rep.onDoors = true;
+      rep.protectedFaceUpStack=protectedFaceUpStack;
+      rep.faceUpStackLevel=protectedFaceUpStack ? nextFaceUpLevel : 0;
+      rep.faceUpSupports=protectedFaceUpStack ? doorRests : [];
     }
 
     /* It must not be able to shift toward the nose and drop off its deck. */
@@ -515,8 +552,11 @@
     const np = { x:best.x, y:best.y, z:best.z,
                  w:best.o2.w, h:best.o2.h, d:best.o2.d,
                  rot:best.o2.rot, pose:best.o2.pose, flip:!!best.o2.flip,
-                 cab, cls, onDoors:best.rep.onDoors };
+                 cab, cls, onDoors:best.rep.onDoors,
+                 faceUpStackLevel:best.rep.faceUpStackLevel || (best.o2.pose==='back' && !flatOnFloorOK(cls) ? 1 : 0),
+                 protectedFaceUpStack:best.rep.protectedFaceUpStack };
     for(const p of best.rep.rests) p.carrying = (p.carrying||0)+1;
+    for(const p of best.rep.faceUpSupports) p.protectedFaceUpStack=true;
     placed.push(np); idxAdd(ix,np);
     return true;
   }
@@ -526,9 +566,9 @@
         only pieces strong enough to carry several layers.
      2. Whatever floor is left over gets tall and wall cabinets on their SIDE.
      3. Everything else goes into the layers above in its preferred pose.
-     4. Anything still homeless gets one more try, this time allowed to ride on
-        the doors of a face-up cabinet — one piece per door bank, nothing above
-        it, nothing heavy.                                                    */
+     4. Anything still homeless gets one more try as an ordinary rider on a
+        face-up cabinet. Protected face-up stacks are considered separately for
+        compatible shallow wall/hutch cabinets, and each interface is validated. */
   function packLoad(cabinets, g, opt){
     const gap=opt.gap, allowStack=opt.allowStack, ply=allowStack?opt.ply:0;
     const SC=opt.standMargin, allowBack=opt.allowBack!==false;
@@ -560,16 +600,28 @@
       if(!tryPlace(it.cab,it.cls,makePoses(it.cab,['upright'],it.cls),g,ix,placed,gap,ply,O('floor')))
         spill.push(it);
 
-    /* 2 — remaining floor: tall & wall cabinets on their side */
+    /* 2 — before using remaining floor, let shallow wall/hutch cabinets try a
+       protected FACE-UP stack above an existing solid deck. This only presents
+       the FACE-UP pose; all interface checks still run in canPlace(). */
+    const faceUpStacked=new Set();
+    const protectedCandidates=all.filter(i=>!bayed.has(i.cab) && mayFormProtectedFaceUpStack(i.cab,i.cls)).sort(byVol);
+    if(allowDoorDeck && allowStack && allowBack && protectedCandidates.length>=V2.minProtectedFaceUpStackDiscoveryCount){
+      for(const it of protectedCandidates){
+        if(tryPlace(it.cab,it.cls,makePoses(it.cab,['back'],it.cls),g,ix,placed,gap,ply,
+                    O('above',{doorDeck:true, protectedFaceUpStack:true}))) faceUpStacked.add(it.cab);
+      }
+    }
+
+    /* 3 — remaining floor: tall & wall cabinets on their side */
     const later=[];
-    for(const it of all.filter(i=>(i.cls==='tall'||i.cls==='wall') && !bayed.has(i.cab)).sort(byVol))
+    for(const it of all.filter(i=>(i.cls==='tall'||i.cls==='wall') && !bayed.has(i.cab) && !faceUpStacked.has(i.cab)).sort(byVol))
       if(!tryPlace(it.cab,it.cls,makePoses(it.cab,['side'],it.cls),g,ix,placed,gap,ply,O('floor')))
         later.push(it);
 
-    /* 3 — the layers above */
+    /* 4 — the layers above */
     const queue=[...spill, ...later,
                  ...all.filter(i=>i.cls!=='base'&&i.cls!=='tall'&&i.cls!=='wall')]
-                 .filter(i=>!bayed.has(i.cab)).sort(byVol);
+                 .filter(i=>!bayed.has(i.cab) && !faceUpStacked.has(i.cab)).sort(byVol);
     const stillOut=[];
     for(const it of queue){
       const pref=(POSE_ORDER[it.cls]||POSE_ORDER.other).filter(k=>allowBack||k!=='back');
@@ -582,7 +634,7 @@
       if(!ok) stillOut.push(it);
     }
 
-    /* 4 — last call: ride on a door bank, one piece only */
+    /* 5 — last call: ordinary rider on a door bank, one piece only */
     for(const it of stillOut){
       let ok=false;
       if(allowDoorDeck && allowStack){
@@ -629,7 +681,7 @@
   window.isFaceUp    = isFaceUp;
   window.LOAD_RULES_V2 = V2;          // tunable from the browser console
   window.CLO_V2_POSE_ORDER = POSE_ORDER;
-  window.CLO_RULES_V2 = { canPlace, validatePlacement, analyzeLoadState, supportTier, freeTier, isFaceUp, poseOrder:POSE_ORDER, constants:V2 };
+  window.CLO_RULES_V2 = { canPlace, validatePlacement, analyzeLoadState, supportTier, freeTier, isFaceUp, isFreeStandingUprightStable, mayFormProtectedFaceUpStack, poseOrder:POSE_ORDER, constants:V2 };
   window.CLO_ACTIVE_ENGINE = 'v2';
   if(typeof window.setEngineStatus==='function') window.setEngineStatus('Packing rules: V2 active', false);
   if(window.CLO_LEGACY_POSE_ORDER && JSON.stringify(window.CLO_LEGACY_POSE_ORDER)!==JSON.stringify(POSE_ORDER))
@@ -642,10 +694,11 @@
   window.poseText = function(p){
     let s = basePoseText ? basePoseText(p) : '';
     if(p && p.flip && p.pose==='upright') s += ', upside down';
-    if(p && p.loose) s += ' \u00b7 block it';
+    if(p && p.protectedFaceUpStack) s += ' · FACE UP — PAD / BLANKET BETWEEN CABINETS';
+    if(p && p.loose) s += ' · block it';
     return s;
   };
 
   console.log('load-rules-v2 active - tighter packing, forward restraint, '
-            + 'one layer on doors. Dials: window.LOAD_RULES_V2');
+            + 'protected face-up stacks. Dials: window.LOAD_RULES_V2');
 })();

@@ -120,6 +120,51 @@ test('V2 enforces V-nose, gooseneck, wheel-well, and rear-door-ledge geometry', 
   assert.equal(api.validatePlacement(ledgeTrailer, 1, Object.assign({}, candidate,{z:216}), 0.5, {boxes:[]}).ok, false);
 });
 
+test('Kemp mirror-frame geometry rejects a free-standing slender upright pose while retaining a stable alternative', () => {
+  const api = loadV2();
+  const g = rectangularTrailer(96);
+  const mirror = {id:'R3CN1',rc:'R3CN1',name:'Mirror Frame',w:25,h:36,d:0.75,stackOn:false,cls:'flat'};
+  assert.equal(api.constants.maxFreeStandingSlenderness, 12);
+  assert.equal(api.isFreeStandingUprightStable(25,36,0.75), false);
+  const upright = {x:0,y:0,z:0,w:25,h:36,d:0.75,pose:'upright',cls:'flat',cab:mirror,standMargin:3};
+  assert.equal(api.validatePlacement(g, 1, upright, 0.5, {boxes:[]}).ok, false);
+  const side = {x:0,y:0,z:0,w:36,h:25,d:0.75,pose:'side',cls:'flat',cab:mirror,standMargin:3};
+  assert.equal(api.validatePlacement(g, 1, side, 0.5, {boxes:[]}).ok, true);
+});
+
+test('Kemp wall hutch geometry permits a capped three-level protected face-up stack with padding instruction and automatic discovery', () => {
+  const api = loadV2();
+  const g = rectangularTrailer(96);
+  const baseCab = {id:'deck',w:80,h:24,d:60,stackOn:true,cls:'base'};
+  const deck = {x:0,y:0,z:0,w:80,h:24,d:60,pose:'upright',cls:'base',cab:baseCab,carrying:0};
+  const lowerCab = {id:'R2C4',rc:'R2C4',name:'Wall Hutch',w:64.625,h:58.25,d:15,stackOn:false,cls:'wall'};
+  const middleCab = {id:'R2C9',rc:'R2C9',name:'Wall Hutch',w:64,h:58.25,d:15,stackOn:false,cls:'wall'};
+  const upperCab = {id:'R2C6',rc:'R2C6',name:'Wall Hutch',w:57.5,h:58.25,d:15,stackOn:false,cls:'wall'};
+  assert.equal(api.mayFormProtectedFaceUpStack(lowerCab, 'wall'), true);
+  assert.equal(api.constants.minProtectedFaceUpStackDiscoveryCount, 3);
+  const lower = {x:0,y:24.5,z:0,w:64.625,h:15,d:58.25,pose:'back',cls:'wall',cab:lowerCab,faceUpStackLevel:1,carrying:0,standMargin:3};
+  assert.equal(api.validatePlacement(g, 1, lower, 0.5, {boxes:[deck]}).ok, true);
+  const middle = {x:0,y:40,z:0,w:64,h:15,d:58.25,pose:'back',cls:'wall',cab:middleCab,faceUpStackLevel:2,carrying:0,standMargin:3};
+  assert.equal(api.validatePlacement(g, 1, middle, 0.5, {boxes:[deck,lower]}).ok, true);
+  const upper = {x:0,y:55.5,z:0,w:57.5,h:15,d:58.25,pose:'back',cls:'wall',cab:upperCab,faceUpStackLevel:3,carrying:0,standMargin:3};
+  assert.equal(api.validatePlacement(g, 1, upper, 0.5, {boxes:[deck,lower,middle]}).ok, true);
+  const analyzed = api.analyzeLoadState(g, [deck,lower,middle,upper], 1, 0.5);
+  assert.equal(analyzed.violations.length, 0);
+  assert.ok(analyzed.boxes.filter(p=>p.protectedFaceUpStack).length >= 3);
+  assert.match(api.runtime.poseText(Object.assign({}, upper, {protectedFaceUpStack:true})), /PAD \/ BLANKET BETWEEN CABINETS/);
+  const fourth = Object.assign({}, upper, {y:71, faceUpStackLevel:4, cab:{id:'fourth',w:56,h:58.25,d:15,cls:'wall'}});
+  assert.equal(api.validatePlacement(g, 1, fourth, 0.5, {boxes:[deck,lower,middle,upper]}).ok, false);
+
+  const result = api.runtime.packLoad([baseCab,lowerCab,middleCab,upperCab], g, {gap:1,ply:0.5,allowStack:true,allowBack:true,standMargin:3});
+  const faceUp = result.placed.filter(p=>p.pose==='back' && p.cls==='wall');
+  assert.equal(faceUp.length, 3);
+  assert.equal(faceUp.filter(p=>p.protectedFaceUpStack).length, 3);
+  assert.equal(result.failed.length, 0);
+
+  const ordinaryPair = api.runtime.packLoad([baseCab,lowerCab,middleCab], g, {gap:1,ply:0.5,allowStack:true,allowBack:true,standMargin:3});
+  assert.equal(ordinaryPair.placed.some(p=>p.protectedFaceUpStack), false);
+});
+
 test('V2 enforces 60% support, plywood height, and forward restraint', () => {
   const api = loadV2();
   const g = rectangularTrailer(96);

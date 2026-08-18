@@ -150,7 +150,7 @@
               <li><b>Floor = base cabinets, standing upright.</b> They're the only pieces strong enough to carry several layers, so the bottom deck is filled with them first &mdash; widest first, so the heavy ones land up front.</li>
               <li><b>Leftover floor = tall &amp; wall cabinets on their side</b>, end panel down. The face pointing up is a solid gable, so the next layer can ride on them.</li>
               <li><b>Plywood over the deck</b>, then the upper layers go on.</li>
-              <li><b>Face up is the last resort.</b> A cabinet is only laid doors-up when it won't go on its side or upright, and never on the floor. One qualifying piece may ride on that door bank only when the active V2 support, coverage, bulk and one-piece limits all pass; nothing may ride above that piece.</li>
+              <li><b>Face up is the last resort.</b> A real cabinet is never laid doors-up on the floor. Compatible shallow wall/hutch cabinets may form a protected face-up stack only when every interface passes the active V2 support, coverage, bulk, forward-restraint and stack-depth limits. <b>PAD / BLANKET BETWEEN CABINETS</b> is a crew instruction; the app cannot verify that protection was installed.</li>
               <li><b>Panels, fillers and trim</b> lie flat and fill the gaps between layers.</li>
             </ol>
           </details>
@@ -264,17 +264,21 @@
       <div class="flex gap-4 flex-col lg:flex-row">
         <div class="flex-1 bg-slate-800 rounded-lg overflow-hidden relative" style="height:75vh">
           <div id="canvas3d" class="w-full h-full cursor-move"></div>
-          <div class="absolute top-3 right-3 bg-white/95 rounded-lg shadow-lg p-3 w-60 text-sm">
-            <div class="font-bold border-b pb-1 mb-2">Load Stats</div>
-            <div class="flex justify-between"><span class="text-slate-500">Trailer</span><b id="s-trailer" class="text-right text-xs"></b></div>
-            <div class="flex justify-between"><span class="text-slate-500">Loaded</span><b id="s-loaded" class="text-emerald-600">0</b></div>
-            <div class="flex justify-between"><span class="text-slate-500">Did not fit</span><b id="s-failed" class="text-red-600">0</b></div>
-            <div class="flex justify-between"><span class="text-slate-500">Floor used</span><b id="s-floor">0%</b></div>
-            <div class="flex justify-between"><span class="text-slate-500">Volume used</span><b id="s-vol">0%</b></div>
-            <div class="flex justify-between"><span class="text-slate-500">Deck (bases upright)</span><b id="s-deck">0</b></div>
-            <div id="s-poses" class="mt-1.5 pt-1.5 border-t text-[11px] text-slate-600 space-y-0.5"></div>
-            <div id="s-faillist" class="mt-2 text-xs text-red-600 max-h-24 overflow-auto"></div>
-            <div class="text-[10px] text-slate-400 mt-2 border-t pt-1">Drag: rotate · Right-drag: pan · Scroll: zoom<br>Rear doors = open end (red line)</div>
+          <div id="load-stats" class="absolute top-3 right-3 bg-white/95 rounded-lg shadow-lg p-3 w-60 text-sm">
+            <button id="load-stats-toggle" type="button" onclick="toggleLoadStats()" aria-expanded="true" aria-controls="load-stats-body" class="w-full flex items-center justify-between font-bold border-b pb-1 mb-2 text-left touch-manipulation">
+              <span>Load Stats</span><span id="load-stats-glyph" aria-hidden="true">▾</span>
+            </button>
+            <div id="load-stats-body">
+              <div class="flex justify-between"><span class="text-slate-500">Trailer</span><b id="s-trailer" class="text-right text-xs"></b></div>
+              <div class="flex justify-between"><span class="text-slate-500">Loaded</span><b id="s-loaded" class="text-emerald-600">0</b></div>
+              <div class="flex justify-between"><span class="text-slate-500">Did not fit</span><b id="s-failed" class="text-red-600">0</b></div>
+              <div class="flex justify-between"><span class="text-slate-500">Floor used</span><b id="s-floor">0%</b></div>
+              <div class="flex justify-between"><span class="text-slate-500">Volume used</span><b id="s-vol">0%</b></div>
+              <div class="flex justify-between"><span class="text-slate-500">Deck (bases upright)</span><b id="s-deck">0</b></div>
+              <div id="s-poses" class="mt-1.5 pt-1.5 border-t text-[11px] text-slate-600 space-y-0.5"></div>
+              <div id="s-faillist" class="mt-2 text-xs text-red-600 max-h-24 overflow-auto"></div>
+              <div class="text-[10px] text-slate-400 mt-2 border-t pt-1">Drag: rotate · Right-drag: pan · Scroll: zoom<br>Rear doors = open end (red line)</div>
+            </div>
           </div>
         </div>
         <div class="w-full lg:w-72 bg-white rounded-lg shadow p-3 overflow-auto" style="max-height:75vh">
@@ -1348,6 +1352,34 @@ function optimize(){
 }
 
 /* =================== STATS / SEQUENCE =================== */
+const LOAD_STATS_COLLAPSED_KEY = 'clo.load-stats-collapsed';
+function setLoadStatsCollapsed(collapsed, persist=true){
+  const panel=document.getElementById('load-stats');
+  const body=document.getElementById('load-stats-body');
+  const button=document.getElementById('load-stats-toggle');
+  const glyph=document.getElementById('load-stats-glyph');
+  if(!panel || !body || !button || !glyph) return;
+  body.classList.toggle('hidden', !!collapsed);
+  panel.classList.toggle('w-60', !collapsed);
+  panel.classList.toggle('w-auto', !!collapsed);
+  panel.classList.toggle('p-3', !collapsed);
+  panel.classList.toggle('p-1.5', !!collapsed);
+  button.classList.toggle('border-b', !collapsed);
+  button.classList.toggle('pb-1', !collapsed);
+  button.classList.toggle('mb-2', !collapsed);
+  button.setAttribute('aria-expanded', String(!collapsed));
+  glyph.textContent=collapsed ? '▸' : '▾';
+  if(persist) try{ sessionStorage.setItem(LOAD_STATS_COLLAPSED_KEY, collapsed ? '1' : '0'); }catch(_){ }
+}
+function toggleLoadStats(){
+  const body=document.getElementById('load-stats-body');
+  setLoadStatsCollapsed(!body || !body.classList.contains('hidden'));
+}
+window.addEventListener('DOMContentLoaded', ()=>{
+  let collapsed=false;
+  try{ collapsed=sessionStorage.getItem(LOAD_STATS_COLLAPSED_KEY)==='1'; }catch(_){ }
+  setLoadStatsCollapsed(collapsed, false);
+});
 function updateStats(){
   if(!results) return;
   const {geom:g, placed, failed, trailer:t} = results;
@@ -1373,7 +1405,7 @@ function updateStats(){
     return `<div class="border rounded p-1.5 flex items-center gap-2" style="border-left:4px solid ${roomColor(p.cab)}">
       <b class="text-slate-400">#${p.seq}</b>
       <div><b>${esc(p.cab.rc)}</b> ${esc(p.cab.name)}${isBulky(p.cab)?' <span class="text-[9px] font-bold text-white bg-orange-500 rounded px-1">2+ ppl</span>':''}<br>
-      <span class="text-slate-500">${fmtDim(p.cab.w)}×${fmtDim(p.cab.h)}×${fmtDim(p.cab.d)} · ${fromRear.toFixed(0)}" from rear · ${p.x.toFixed(0)}" from left${onFloor?'':' · stacked at '+p.y.toFixed(0)+'"'} · <b class="${p.pose==='back'&&p.cls!=='flat'&&p.cls!=='pkg'?'text-amber-700':'text-slate-600'}">${poseText(p)}</b>${p.rot?', turned 90°':''}${isFaceUp(p)?(p.carrying?' · <b class="text-amber-700">1 piece on doors</b>':' · <b class="text-amber-700">door-bank limits apply</b>'):''}${p.onDoors?' · <b class="text-amber-700">do not stack above</b>':''}</span></div>
+      <span class="text-slate-500">${fmtDim(p.cab.w)}×${fmtDim(p.cab.h)}×${fmtDim(p.cab.d)} · ${fromRear.toFixed(0)}" from rear · ${p.x.toFixed(0)}" from left${onFloor?'':' · stacked at '+p.y.toFixed(0)+'"'} · <b class="${p.pose==='back'&&p.cls!=='flat'&&p.cls!=='pkg'?'text-amber-700':'text-slate-600'}">${poseText(p)}</b>${p.rot?', turned 90°':''}${p.protectedFaceUpStack?' · <b class="text-amber-700">PAD / BLANKET BETWEEN CABINETS</b>':isFaceUp(p)?(p.carrying?' · <b class="text-amber-700">1 ordinary rider on doors</b>':' · <b class="text-amber-700">door-bank limits apply</b>'):''}${p.onDoors&&!p.protectedFaceUpStack?' · <b class="text-amber-700">do not stack above</b>':''}</span></div>
     </div>`;
   }).join('');
 }
@@ -1647,7 +1679,7 @@ function loadingOrderHTML(){
   }
   const intro = `<div style="font-size:11px;color:#475569;margin-bottom:8px">
     Load in strict number order. The bottom deck goes in first &mdash; base cabinets standing upright, widest first, so the heavy pieces are carried in while the trailer is empty and there is the most room to maneuver. Then plywood, then the layers above.
-    Orange rows need a two-person carry. <b>Amber rows are loaded face up: never put them on the floor; only one qualifying piece may ride on their door bank, and nothing may ride above that piece.</b>
+    Orange rows need a two-person carry. <b>Amber rows are loaded face up: never put them on the floor. A protected face-up stack is allowed only when every interface passes V2 support, coverage, bulk, forward-restraint and depth rules; physically place padding, blankets or foam between protected cabinet surfaces.</b>
     <div style="margin-top:5px;color:#92400e"><b>Spatial loading plan only</b> — verify payload, axle/tongue load, center of gravity, cabinet support, tie-downs, door clearance, and actual trailer dimensions before transport.</div></div>`;
   return intro + `<div style="border:1px solid #cbd5e1;border-radius:8px;overflow:hidden">${body}</div>`;
 }
@@ -1673,7 +1705,7 @@ function plansHTML(forPrint){
     Bottom deck: <b>${deck.filter(p=>p.cls==='base'&&p.pose==='upright').length} base cabinets standing upright</b> — they carry the layers above.
     Tall &amp; wall cabinets ride <b>on their side, end panel down</b>, so nothing bears on their doors.
     ${results.ply?'<b>'+fmtDim(results.ply)+'" plywood</b> goes over the deck before the next layer. ':''}
-    ${faceUp?'<b style="color:#b45309">'+faceUp+' piece'+(faceUp>1?'s':'')+' had to be loaded face up (doors toward the ceiling). Face-up cabinets never go on the floor; only one qualifying piece may ride on a door bank, and nothing may ride above that piece.</b>':'<b>No cabinet is loaded face up.</b>'}
+    ${faceUp?'<b style="color:#b45309">'+faceUp+' piece'+(faceUp>1?'s':'')+' had to be loaded face up (doors toward the ceiling). Face-up cabinets never go on the floor. Protected face-up stacks are allowed only when every interface passes the V2 support, coverage, bulk, forward-restraint and depth rules; the crew must place padding, blankets or foam between protected cabinet surfaces.</b>':'<b>No cabinet is loaded face up.</b>'}
     </div>
     <div style="border:1px solid #f59e0b;border-left:4px solid #b45309;background:#fffbeb;border-radius:4px;padding:8px 11px;margin-bottom:14px;font-size:11px;color:#78350f;line-height:1.45"><b>Spatial loading plan only.</b> Verify payload, axle/tongue load, center of gravity, cabinet support, tie-downs, door clearance, and actual trailer dimensions before transport.</div>`;
   out += sec('Floor Plan — floor level (top view, front of trailer at left)', svgFloorplan('floor'));
