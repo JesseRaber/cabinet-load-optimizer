@@ -10,6 +10,7 @@
 <!-- sql.js: reads a Mozaik JobData.db right in the browser, no server needed -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
 <script src="clo-utils.js?v=1"></script>
+<script src="load-placement-core.js?v=1"></script>
 <style>
   body { margin:0; }
   .tabbtn { padding:.5rem 1rem; border-radius:.375rem .375rem 0 0; font-weight:600; font-size:.875rem; color:#64748b; border-bottom:2px solid transparent; }
@@ -58,7 +59,7 @@
       <label class="text-xs text-slate-300">Clearance
         <input type="number" id="gap" value="1" min="0.25" step="0.25" class="!w-16 !bg-slate-800 !border-slate-600 text-white ml-1 inline-block" />"
       </label>
-      <label class="text-xs text-slate-300 flex items-center gap-1" title="Allow a cabinet to be loaded face up (doors toward the ceiling) as a last resort, when it will not go on its side or upright. Face-up cabinets are never put on the floor and never get anything stacked on them. Turn this off to refuse face-up loading entirely.">
+      <label class="text-xs text-slate-300 flex items-center gap-1" title="Allow a cabinet to be loaded face up (doors toward the ceiling) only as a last resort, when it will not go on its side or upright. Face-up cabinets are never put on the floor. One qualifying piece may ride on a face-up door bank only when the V2 support, coverage, bulk and one-piece rules all pass. Turn this off to refuse face-up loading entirely.">
         <input type="checkbox" id="allow-back" checked class="w-4 h-4"> Allow face-up
       </label>
       <label class="text-xs text-slate-300 flex items-center gap-1">
@@ -72,6 +73,7 @@
       </label>
       <button class="btn btn-green" onclick="optimize()">⚙ Optimize Load</button>
       <button class="btn btn-gray" onclick="doPrint()">🖨 Print Plans</button>
+      <span id="engine-status" class="text-[10px] text-amber-300" aria-live="polite">Packing rules: Legacy active</span>
       <span id="sync-status" class="text-[10px] text-slate-400" aria-live="polite">Saved locally</span>
     </div>
   </header>
@@ -148,7 +150,7 @@
               <li><b>Floor = base cabinets, standing upright.</b> They're the only pieces strong enough to carry several layers, so the bottom deck is filled with them first &mdash; widest first, so the heavy ones land up front.</li>
               <li><b>Leftover floor = tall &amp; wall cabinets on their side</b>, end panel down. The face pointing up is a solid gable, so the next layer can ride on them.</li>
               <li><b>Plywood over the deck</b>, then the upper layers go on.</li>
-              <li><b>Face up is the last resort.</b> A cabinet is only laid doors-up when it won't go on its side or upright &mdash; never on the floor, and nothing is ever stacked on top of it.</li>
+              <li><b>Face up is the last resort.</b> A cabinet is only laid doors-up when it won't go on its side or upright, and never on the floor. One qualifying piece may ride on that door bank only when the active V2 support, coverage, bulk and one-piece limits all pass; nothing may ride above that piece.</li>
               <li><b>Panels, fillers and trim</b> lie flat and fill the gaps between layers.</li>
             </ol>
           </details>
@@ -328,13 +330,23 @@ function saveAll(){
    device/tablet that opens the app. If the app is opened as a local file or the
    server has no settings endpoint, these calls fail silently and localStorage is
    used on its own — nothing breaks. */
-const SETTINGS_URL = 'api/settings';
+/* Static deployments deliberately leave CLO_SETTINGS_URL unset, so GitHub Pages
+   stays local-only and never probes a nonexistent api/settings endpoint. A NAS
+   copy can set window.CLO_SETTINGS_URL before this page's inline script runs. */
+const SETTINGS_URL = typeof window.CLO_SETTINGS_URL === 'string' ? window.CLO_SETTINGS_URL.trim() : '';
 let _serverReady = false, _serverTimer = null;
 function syncStatus(text, bad){
   const node=el('sync-status'); if(!node) return;
   node.textContent=text; node.className='text-[10px] '+(bad?'text-amber-300':'text-slate-400');
 }
+function setEngineStatus(text, fallback){
+  const node=document.getElementById('engine-status'); if(!node) return;
+  node.textContent=text; node.className='text-[10px] '+(fallback?'text-amber-300 font-semibold':'text-emerald-300');
+}
+window.CLO_ACTIVE_ENGINE = 'legacy';
+setEngineStatus('Packing rules: Legacy active', true);
 function pushServer(){
+  if(!SETTINGS_URL){ syncStatus('Saved in this browser'); return; }
   if(!_serverReady) return;                 // don't overwrite the server before we've read it
   if(_serverTimer) clearTimeout(_serverTimer);
   _serverTimer = setTimeout(()=>{
@@ -350,6 +362,7 @@ function pushServer(){
 }
 function pullServer(){
   const done = ()=>{ _serverReady = true; };
+  if(!SETTINGS_URL){ syncStatus('Saved in this browser'); done(); return; }
   try{
     fetch(SETTINGS_URL).then(r=> r.ok ? r.json() : null).then(s=>{
       if(s && Array.isArray(s.trailers) && s.trailers.length){
@@ -393,6 +406,16 @@ function loadAll(){
 const el = id => document.getElementById(id);
 const esc = value => CLO_UTIL.escapeHtmlText(value);
 const escAttr = value => CLO_UTIL.escapeHtmlAttribute(value);
+/* Both the fallback packer and V2 call this shared helper. If the small helper
+   script fails to load, upright placement is denied rather than guessed. */
+function validatePoseClearance(cab, pose, y, trailerHeight, standMargin){
+  const core = window.CLOPlacementCore;
+  if(core && typeof core.validatePoseClearance==='function')
+    return core.validatePoseClearance(cab, pose, y, trailerHeight, standMargin);
+  return pose==='upright'
+    ? {ok:false, code:'TIP_UP_HELPER_UNAVAILABLE', message:'Cannot verify upright tip-up clearance because the shared safety helper is unavailable.'}
+    : {ok:true, code:null, message:''};
+}
 
 /* =================== TABS =================== */
 function showTab(btn){
@@ -528,7 +551,10 @@ function buildCsvRows(rows, map, hasHeader, scale){
     if(!r.some(c=>c)) return;
     const rowNo = i+1+(hasHeader?1:0);
     const w=frac16(parseDim(g(r,'w'))*scale), h=frac16(parseDim(g(r,'h'))*scale), d=frac16(parseDim(g(r,'d'))*scale);
-    if(isNaN(w)||isNaN(h)||isNaN(d)||w<=0||h<=0||d<=0){ errs.push(`Row ${rowNo}: could not read W / H / D`); return; }
+    if(isNaN(w)||isNaN(h)||isNaN(d)||w<=0||h<=0||d<=0||w>IMPORT_LIMITS.maxDimension||h>IMPORT_LIMITS.maxDimension||d>IMPORT_LIMITS.maxDimension){ errs.push(`Row ${rowNo}: W / H / D must be greater than 0 and no more than ${IMPORT_LIMITS.maxDimension}"`); return; }
+    const rawQty=g(r,'qty');
+    const qty=rawQty==='' ? 1 : Number(rawQty);
+    if(!Number.isInteger(qty)||qty<=0||qty>IMPORT_LIMITS.maxPerRow){ errs.push(`Row ${rowNo}: Qty must be a whole number from 1 to ${IMPORT_LIMITS.maxPerRow}`); return; }
     let rc=g(r,'rc');
     if(!rc && (map.room!==undefined||map.cab!==undefined)){
       const rm=g(r,'room'), cb=g(r,'cab');
@@ -536,7 +562,7 @@ function buildCsvRows(rows, map, hasHeader, scale){
     }
     const nm=g(r,'name'), dsc=g(r,'desc');
     const name = nm || dsc || 'Cabinet';
-    out.push({ qty: parseInt(g(r,'qty'),10)||1, name, w, h, d,
+    out.push({ qty, name, w, h, d,
                desc: (dsc===name? '' : dsc), fin:g(r,'fin'), rc: rc || ('CAB'+rowNo) });
   });
   return {rows:out, errs};
@@ -551,9 +577,12 @@ function csvMsg(html, kind){
                           : kind==='ok'    ? `<span class="text-emerald-600 font-bold">${html}</span>`
                           : `<span class="text-slate-500">${html}</span>`;
 }
-function readCsvText(text, source){
+function readCsvText(text, source, sizeChecked){
   el('csv-map').classList.add('hidden'); csvState=null;
   if(!text || !text.trim()){ csvMsg('Nothing to read — paste some rows or pick a file.','error'); return; }
+  const bytes=new Blob([text]).size;
+  if(bytes>IMPORT_LIMITS.maxCsvBytes){ csvMsg(`That CSV/text input is too large (${Math.ceil(bytes/1024/1024)} MB). The maximum is ${IMPORT_LIMITS.maxCsvBytes/1024/1024} MB.`,'error'); return; }
+  if(!sizeChecked && bytes>IMPORT_LIMITS.warnCsvBytes && !confirm(`This CSV/text input is ${Math.ceil(bytes/1024/1024)} MB. Continue reading it?`)) return;
   const grid = parseDelimited(text);
   if(!grid.length){ csvMsg('No rows found in that file.','error'); return; }
   const {map, hasHeader} = guessMap(grid);
@@ -613,6 +642,10 @@ function setCsvMap(key, val){
 function commitCsvImport(){
   if(!csvState) return;
   const {rows, errs} = buildCsvRows(csvState.grid, csvState.map, csvState.hasHeader, csvScale(csvState.scale));
+  const summary=importRowsSummary(rows);
+  if(!summary.ok){ csvMsg(summary.errors.slice(0,3).map(esc).join('<br>')+(summary.errors.length>3?'<br>…and more':'') ,'error'); return; }
+  if(!hasImportCapacity(summary.total)){ csvMsg(`This import would raise the job to ${cabinets.length+summary.total} items. The current-job maximum is ${IMPORT_LIMITS.maxItems}.`,'error'); return; }
+  if(!confirmLargeImport(summary, 'This import')) return;
   let added=0;
   rows.forEach(r=>{
     for(let q=0;q<r.qty;q++){
@@ -630,9 +663,11 @@ function commitCsvImport(){
 }
 function readCsvFile(file){
   if(!file) return;
-  csvMsg(`Reading ${esc(file.name)}\u2026`,'busy');
+  if(file.size>IMPORT_LIMITS.maxCsvBytes){ csvMsg(`${esc(file.name)} is too large. CSV/text imports are limited to ${IMPORT_LIMITS.maxCsvBytes/1024/1024} MB.`,'error'); return; }
+  if(file.size>IMPORT_LIMITS.warnCsvBytes && !confirm(`${file.name} is ${Math.ceil(file.size/1024/1024)} MB. Continue reading it?`)) return;
+  csvMsg(`Reading ${esc(file.name)}…`,'busy');
   const fr=new FileReader();
-  fr.onload = () => readCsvText(fr.result, file.name);
+  fr.onload = () => readCsvText(fr.result, file.name, true);
   fr.onerror = () => csvMsg('Could not read that file.','error');
   fr.readAsText(file);
 }
@@ -650,6 +685,35 @@ function initCsvDrop(){
 const MM_TO_IN = 1/25.4;
 const frac16 = v => Math.round(v*16)/16;              // Mozaik stores mm; snap to 1/16"
 const FIN_ENDS = { 0:'None', 1:'1 End', 2:'2 Ends' };
+/* Guardrails stop a mistaken column map or quantity typo from allocating an
+   unbounded number of browser objects. Limits are intentionally generous for
+   large cabinet jobs; warnings invite review before doing expensive work. */
+const IMPORT_LIMITS = Object.freeze({
+  maxItems:2500, warnItems:500, maxPerRow:500, maxDimension:600,
+  maxCsvBytes:10*1024*1024, warnCsvBytes:2*1024*1024,
+  maxDbBytes:50*1024*1024, warnDbBytes:10*1024*1024
+});
+function importRowsSummary(rows){
+  let total=0; const errors=[];
+  for(const r of rows){
+    const qty=Number(r.qty);
+    if(!Number.isInteger(qty)||qty<=0) errors.push(`${r.rc||r.name||'Row'} has an invalid quantity.`);
+    else if(qty>IMPORT_LIMITS.maxPerRow) errors.push(`${r.rc||r.name||'Row'} has quantity ${qty}; the per-row maximum is ${IMPORT_LIMITS.maxPerRow}.`);
+    else total+=qty;
+    for(const [label,value] of [['Width',r.w],['Height',r.h],['Depth',r.d]])
+      if(!Number.isFinite(Number(value))||Number(value)<=0||Number(value)>IMPORT_LIMITS.maxDimension)
+        errors.push(`${r.rc||r.name||'Row'} has an invalid ${label.toLowerCase()} (must be > 0 and ≤ ${IMPORT_LIMITS.maxDimension}").`);
+  }
+  if(total>IMPORT_LIMITS.maxItems) errors.push(`This import expands to ${total} items; the maximum is ${IMPORT_LIMITS.maxItems}.`);
+  return {ok:!errors.length, total, errors};
+}
+function confirmLargeImport(summary, source){
+  if(summary.total<=IMPORT_LIMITS.warnItems) return true;
+  return confirm(`${source} expands to ${summary.total} items. Large loads can take longer to optimize. Continue?`);
+}
+function hasImportCapacity(count){
+  return cabinets.length + count <= IMPORT_LIMITS.maxItems;
+}
 
 let sqlJsPromise = null;
 function loadSqlJs(){
@@ -677,8 +741,10 @@ function parseJobDb(db){
     const room = rooms[r.Room] || { num:r.Room, roomName:'Room '+r.Room };
     const w = frac16((r.W||0)*MM_TO_IN), h = frac16((r.H||0)*MM_TO_IN), d = frac16((r.D||0)*MM_TO_IN);
     const name = r.cabName || 'Cabinet';
-    if(w<=0 || h<=0 || d<=0){ skipped.push(`${name} (no size)`); continue; }
-    out.push({ qty: parseInt(r.quan||1,10) || 1,
+    if(w<=0 || h<=0 || d<=0 || w>IMPORT_LIMITS.maxDimension || h>IMPORT_LIMITS.maxDimension || d>IMPORT_LIMITS.maxDimension){ skipped.push(`${name} (invalid size)`); continue; }
+    const rawQty = r.quan==null || r.quan==='' ? 1 : Number(r.quan);
+    if(!Number.isInteger(rawQty) || rawQty<=0 || rawQty>IMPORT_LIMITS.maxPerRow){ skipped.push(`${name} (invalid quantity)`); continue; }
+    out.push({ qty: rawQty,
                rc: `R${room.num}C${r.cab}`, name, w, h, d,
                desc: r.roomName || room.roomName || r.Type || '',
                fin: FIN_ENDS[r.finEnds] !== undefined ? FIN_ENDS[r.finEnds] : (r.finEnds||'') });
@@ -693,7 +759,9 @@ function dbMsg(html, kind){
 }
 async function importJobDb(file){
   if(!file) return;
-  dbMsg(`Reading ${esc(file.name)}\u2026`, 'busy');
+  if(file.size>IMPORT_LIMITS.maxDbBytes){ dbMsg(`${esc(file.name)} is too large. JobData.db imports are limited to ${IMPORT_LIMITS.maxDbBytes/1024/1024} MB.`, 'error'); return; }
+  if(file.size>IMPORT_LIMITS.warnDbBytes && !confirm(`${file.name} is ${Math.ceil(file.size/1024/1024)} MB. Continue reading it?`)) return;
+  dbMsg(`Reading ${esc(file.name)}…`, 'busy');
   try{
     const bytes = new Uint8Array(await file.arrayBuffer());
     if(new TextDecoder().decode(bytes.slice(0,15)) !== 'SQLite format 3')
@@ -702,6 +770,10 @@ async function importJobDb(file){
     const SQL = await loadSqlJs();
     const db = new SQL.Database(bytes);
     let parsed; try{ parsed = parseJobDb(db); } finally { db.close(); }
+    const summary=importRowsSummary(parsed.rows);
+    if(!summary.ok) throw new Error(summary.errors.slice(0,3).join(' '));
+    if(!hasImportCapacity(summary.total)) throw new Error(`This import would raise the job to ${cabinets.length+summary.total} items. The current-job maximum is ${IMPORT_LIMITS.maxItems}.`);
+    if(!confirmLargeImport(summary, 'This JobData.db import')){ dbMsg('Import cancelled.', 'busy'); return; }
 
     let added = 0;
     parsed.rows.forEach(r=>{
@@ -751,8 +823,12 @@ function syncStackDefault(){
    grouped and coloured apart via `room`. */
 function addManual(){
   const w=parseDim(el('m-w').value), h=parseDim(el('m-h').value), d=parseDim(el('m-d').value);
-  const rc=el('m-rc').value.trim(), pkg=el('m-pkg').value.trim(), qty=parseInt(el('m-qty').value)||1;
-  if(isNaN(w)||isNaN(h)||isNaN(d)){ alert('All three dimensions are required.'); return; }
+  const rc=el('m-rc').value.trim(), pkg=el('m-pkg').value.trim();
+  const qty=Number(el('m-qty').value);
+  if(!Number.isInteger(qty)||qty<=0||qty>IMPORT_LIMITS.maxPerRow){ alert(`Qty must be a whole number from 1 to ${IMPORT_LIMITS.maxPerRow}.`); return; }
+  if(isNaN(w)||isNaN(h)||isNaN(d)||w<=0||h<=0||d<=0||w>IMPORT_LIMITS.maxDimension||h>IMPORT_LIMITS.maxDimension||d>IMPORT_LIMITS.maxDimension){ alert(`All dimensions must be greater than 0 and no more than ${IMPORT_LIMITS.maxDimension}".`); return; }
+  if(!hasImportCapacity(qty)){ alert(`This entry would raise the job to ${cabinets.length+qty} items. The current-job maximum is ${IMPORT_LIMITS.maxItems}.`); return; }
+  if(qty>IMPORT_LIMITS.warnItems && !confirm(`This manual entry will add ${qty} items. Continue?`)) return;
   const isPkg = !rc;
   const base = isPkg ? (pkg? 'P'+pkg : 'PKG') : rc;
   for(let q=0;q<qty;q++){
@@ -1010,6 +1086,7 @@ const POSE_ORDER = {
   pkg  : ['back','side','upright'],
   other: ['side','upright','back']
 };
+window.CLO_LEGACY_POSE_ORDER = POSE_ORDER;
 function makePoses(cab, kinds){
   const P=[];
   for(const k of kinds){
@@ -1161,14 +1238,8 @@ function tryPlace(cab, cls, poses, g, ix, placed, gap, ply, o){
       const onFloor = Math.abs(y-fy) < 0.5;
       for(const o2 of poses){
         if(o2.pose==='back' && onFloor && !floorFlatOK) continue;
-        if(o2.pose==='upright'){
-          /* To stand a cabinet up you tip it from flat, and the far corner sweeps
-             the diagonal of its height x depth face — not just its height. A 90"
-             tall x 25" deep box needs ~93.4" of headroom to rotate up, so it
-             can't be stood in 91-92". */
-          const diag=Math.hypot(cab.h, cab.d);
-          if(g.H-y < diag + o.standMargin) continue;
-        }
+        const poseClearance = validatePoseClearance(cab, o2.pose, y, g.H, o.standMargin);
+        if(!poseClearance.ok) continue;
         if(z+o2.d > g.totalL+0.01) continue;
         if(y+o2.h > g.H+0.01) continue;
         if(o2.w > wr.max-wr.min+0.01) continue;
@@ -1206,7 +1277,8 @@ function tryPlace(cab, cls, poses, g, ix, placed, gap, ply, o){
       solid gable, so the next layer can ride on them.
    3. Everything else goes into the layers above in its preferred pose. A real
       cabinet is only laid face up once side and upright have both failed, and
-      never on the floor — and nothing is ever stacked on top of it.           */
+      never on the floor. The active V2 engine may later allow one qualifying
+      piece on that door bank; nothing may ride above that piece.              */
 function packLoad(cabinets, g, opt){
   const gap=opt.gap, allowStack=opt.allowStack, ply=allowStack?opt.ply:0;
   const SC=opt.standMargin, allowBack=opt.allowBack!==false;
@@ -1301,7 +1373,7 @@ function updateStats(){
     return `<div class="border rounded p-1.5 flex items-center gap-2" style="border-left:4px solid ${roomColor(p.cab)}">
       <b class="text-slate-400">#${p.seq}</b>
       <div><b>${esc(p.cab.rc)}</b> ${esc(p.cab.name)}${isBulky(p.cab)?' <span class="text-[9px] font-bold text-white bg-orange-500 rounded px-1">2+ ppl</span>':''}<br>
-      <span class="text-slate-500">${fmtDim(p.cab.w)}×${fmtDim(p.cab.h)}×${fmtDim(p.cab.d)} · ${fromRear.toFixed(0)}" from rear · ${p.x.toFixed(0)}" from left${onFloor?'':' · stacked at '+p.y.toFixed(0)+'"'} · <b class="${p.pose==='back'&&p.cls!=='flat'&&p.cls!=='pkg'?'text-amber-700':'text-slate-600'}">${poseText(p)}</b>${p.rot?', turned 90°':''}${isFaceUp(p)?' · <b class="text-amber-700">nothing on top</b>':''}</span></div>
+      <span class="text-slate-500">${fmtDim(p.cab.w)}×${fmtDim(p.cab.h)}×${fmtDim(p.cab.d)} · ${fromRear.toFixed(0)}" from rear · ${p.x.toFixed(0)}" from left${onFloor?'':' · stacked at '+p.y.toFixed(0)+'"'} · <b class="${p.pose==='back'&&p.cls!=='flat'&&p.cls!=='pkg'?'text-amber-700':'text-slate-600'}">${poseText(p)}</b>${p.rot?', turned 90°':''}${isFaceUp(p)?(p.carrying?' · <b class="text-amber-700">1 piece on doors</b>':' · <b class="text-amber-700">door-bank limits apply</b>'):''}${p.onDoors?' · <b class="text-amber-700">do not stack above</b>':''}</span></div>
     </div>`;
   }).join('');
 }
@@ -1531,7 +1603,7 @@ function manifestTable(){
     const numLabel = (p.cab.isPkg && !p.cab.pkg) ? '' : p.cab.rc;
     return `<tr>
       <td style="font-weight:bold">${p.seq}</td>
-      <td><span style="display:inline-block;width:9px;height:9px;background:${roomColor(p.cab)};margin-right:4px"></span><b>${numLabel}</b></td>
+      <td><span style="display:inline-block;width:9px;height:9px;background:${roomColor(p.cab)};margin-right:4px"></span><b>${esc(numLabel)}</b></td>
       <td>${esc(p.cab.name)}</td>
       <td>${fmtDim(p.cab.w)} × ${fmtDim(p.cab.h)} × ${fmtDim(p.cab.d)}</td>
       <td>${fmtDim(fromRear)}" fwd of rear doors, ${fmtDim(p.x)}" from left wall</td>
@@ -1575,7 +1647,8 @@ function loadingOrderHTML(){
   }
   const intro = `<div style="font-size:11px;color:#475569;margin-bottom:8px">
     Load in strict number order. The bottom deck goes in first &mdash; base cabinets standing upright, widest first, so the heavy pieces are carried in while the trailer is empty and there is the most room to maneuver. Then plywood, then the layers above.
-    Orange rows need a two-person carry. <b>Amber rows are loaded face up: never set anything on them.</b></div>`;
+    Orange rows need a two-person carry. <b>Amber rows are loaded face up: never put them on the floor; only one qualifying piece may ride on their door bank, and nothing may ride above that piece.</b>
+    <div style="margin-top:5px;color:#92400e"><b>Spatial loading plan only</b> — verify payload, axle/tongue load, center of gravity, cabinet support, tie-downs, door clearance, and actual trailer dimensions before transport.</div></div>`;
   return intro + `<div style="border:1px solid #cbd5e1;border-radius:8px;overflow:hidden">${body}</div>`;
 }
 function plansHTML(forPrint){
@@ -1600,8 +1673,9 @@ function plansHTML(forPrint){
     Bottom deck: <b>${deck.filter(p=>p.cls==='base'&&p.pose==='upright').length} base cabinets standing upright</b> — they carry the layers above.
     Tall &amp; wall cabinets ride <b>on their side, end panel down</b>, so nothing bears on their doors.
     ${results.ply?'<b>'+fmtDim(results.ply)+'" plywood</b> goes over the deck before the next layer. ':''}
-    ${faceUp?'<b style="color:#b45309">'+faceUp+' piece'+(faceUp>1?'s':'')+' had to be loaded face up (doors toward the ceiling) — nothing is stacked on '+(faceUp>1?'them':'it')+'.</b>':'<b>No cabinet is loaded face up.</b>'}
-    </div>`;
+    ${faceUp?'<b style="color:#b45309">'+faceUp+' piece'+(faceUp>1?'s':'')+' had to be loaded face up (doors toward the ceiling). Face-up cabinets never go on the floor; only one qualifying piece may ride on a door bank, and nothing may ride above that piece.</b>':'<b>No cabinet is loaded face up.</b>'}
+    </div>
+    <div style="border:1px solid #f59e0b;border-left:4px solid #b45309;background:#fffbeb;border-radius:4px;padding:8px 11px;margin-bottom:14px;font-size:11px;color:#78350f;line-height:1.45"><b>Spatial loading plan only.</b> Verify payload, axle/tongue load, center of gravity, cabinet support, tie-downs, door clearance, and actual trailer dimensions before transport.</div>`;
   out += sec('Floor Plan — floor level (top view, front of trailer at left)', svgFloorplan('floor'));
   if(hasStacked) out += sec('Floor Plan — stacked layer (cabinets loaded on top)', svgFloorplan('stacked'));
   out += sec('Elevation — LEFT side (cabinets on left half)', svgElevation('left'), true);
@@ -1632,10 +1706,10 @@ el('m-rc').addEventListener('input', syncStackDefault);
 syncStackDefault();
 ['t-h','t-gnh','t-l','t-wwr','t-wwl','t-wwf'].forEach(id=>el(id).addEventListener('input',tfRefresh));
 </script>
-<script src="manual-layout.js?v=3"></script>
-<script src="load-learning.js?v=2"></script>
+<script src="manual-layout.js?v=4"></script>
+<script src="load-learning.js?v=3"></script>
 <script src="end-views.js?v=2"></script>
 <script src="drag-3d.js?v=2"></script>
-<script src="load-rules-v2.js?v=2"></script>
+<script src="load-rules-v2.js?v=3"></script>
 </body>
 </html>
