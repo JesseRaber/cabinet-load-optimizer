@@ -403,8 +403,9 @@ window.optimize = function(){
      owns the loading rules -- bases upright on the deck, tall and wall cabinets
      on their side with the end panel down, panels and trim lying flat in the
      gaps, a cabinet face up only as a last resort and never on the floor. The
-     V2 engine may allow one qualifying piece on its door bank; nothing may ride
-     above that piece. Those rules live in ONE place. Do not restate them here. ---- */
+     V2 may allow a bounded protected face-up stack only when every interface
+     passes its support, coverage, bulk, restraint and depth checks. Those rules
+     live in ONE place. Do not restate them here. ---- */
   const r = packLoad(cabinets.filter(c=>!c.pin), g,
                      { gap, ply, allowStack, allowBack, standMargin:SC, seed });
 

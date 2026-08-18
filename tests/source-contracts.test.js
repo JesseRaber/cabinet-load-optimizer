@@ -32,3 +32,19 @@ test('replaced 3D load groups are disposed', () => {
   const source = read('cabinet-load-optimizer.html');
   assert.match(source, /scene\.remove\(loadGroup\); dispose3DObject\(loadGroup\)/);
 });
+
+test('Load Stats collapse is reversible, session-persistent, data-preserving, and does not alter the load or camera', () => {
+  const source = read('cabinet-load-optimizer.html');
+  assert.match(source, /id="load-stats-toggle"/);
+  assert.match(source, /id="load-stats-body"/);
+  assert.match(source, /aria-controls="load-stats-body"/);
+  assert.match(source, /const LOAD_STATS_COLLAPSED_KEY = 'clo\.load-stats-collapsed';/);
+  assert.match(source, /sessionStorage\.setItem\(LOAD_STATS_COLLAPSED_KEY/);
+  assert.match(source, /body\.classList\.toggle\('hidden', !!collapsed\)/);
+  assert.match(source, /glyph\.textContent=collapsed \? '▸' : '▾'/);
+  assert.match(source, /id="s-trailer"/);
+  assert.match(source, /id="s-loaded"/);
+  assert.match(source, /id="s-failed"/);
+  const toggle = source.slice(source.indexOf('function setLoadStatsCollapsed('), source.indexOf('function updateStats('));
+  assert.doesNotMatch(toggle, /\b(optimize|draw3D|resize3D|packLoad)\s*\(/);
+});
