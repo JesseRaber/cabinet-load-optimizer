@@ -80,7 +80,9 @@
     deadMax   : 16,     // a leftover slot narrower than this fits nothing
     wZ        : 1.0,    // penalty per inch further back
     wY        : 0.6,    // penalty per inch higher up
-    doorCover : 0.85,   // a piece on doors must be this well supported
+    // Explicit shop rule: a door rider must satisfy BOTH independent 85% tests.
+    doorRiderSupport : 0.85, // percentage of the rider's own footprint that must be supported
+    doorBankCoverage : 0.85, // percentage of each underlying face-up door bank that the rider must cover
     doorBulk  : 16000,  // in^3 — biggest piece allowed to ride on doors
     doorRatio : 1.0,    // and no bulkier than the cabinet whose doors it rides on
     tallBays  : true,   // give long tall cabinets their own bay before the bases scatter the floor
@@ -191,8 +193,13 @@
         if(doorSup>0){
           p.onDoors=true;
           if(!mayRideOnDoors(p.cab,p.cls,p.pose)) add('DOOR_PIECE',p,'this piece may not ride on cabinet doors');
-          if(sup<area*V2.doorCover) add('DOOR_COVER',p,'not enough of this piece is supported over the door bank');
+          if(sup<area*V2.doorRiderSupport)
+            add('DOOR_RIDER_SUPPORT',p,'less than the required rider footprint is supported over the door bank');
           for(const q of doorRests){
+            const doorArea=q.w*q.d;
+            const doorCoverage=doorArea>0 ? ov(p.x,p.x+p.w,q.x,q.x+q.w)*ov(p.z,p.z+p.d,q.z,q.z+q.d)/doorArea : 0;
+            if(doorCoverage<V2.doorBankCoverage)
+              add('DOOR_BANK_COVERAGE',p,'rider does not cover the required share of the door bank beneath it',q);
             if(bulk(p.cab||{w:0,h:0,d:0})>bulk(q.cab||{w:0,h:0,d:0})*V2.doorRatio)
               add('DOOR_BULK',p,'piece is too large for the door bank beneath it',q);
           }
@@ -339,12 +346,12 @@
 
     if(supDoors > 0){
       if(!ccab || !mayRideOnDoors(ccab, ccls, cpose)) return null;
-      if(sup < area*V2.doorCover) return null;         // upper piece must be well supported
+      if(sup < area*V2.doorRiderSupport) return null;  // rider must be sufficiently supported
       for(const p of rests){
         if(freeTier(p)!==1) continue;
         const doorArea=p.w*p.d;
         const doorCoverage=doorArea>0 ? ov(x,x+w,p.x,p.x+p.w)*ov(z,z+d,p.z,p.z+p.d)/doorArea : 0;
-        if(doorCoverage < V2.doorCover) return null;   // cover the door bank, not merely the upper piece
+        if(doorCoverage < V2.doorBankCoverage) return null; // rider must also cover this door bank
         if(bulk(ccab) > bulk(p.cab||{w:0,h:0,d:0}) * V2.doorRatio) return null;
       }
       rep.onDoors = true;

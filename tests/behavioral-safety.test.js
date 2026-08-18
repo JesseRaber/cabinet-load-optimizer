@@ -135,18 +135,36 @@ test('V2 enforces 60% support, plywood height, and forward restraint', () => {
   assert.equal(api.validatePlacement(g, 1, wrongPlywood, 0.5, {boxes:[support]}).ok, false);
 });
 
-test('V2 keeps real face-up cabinets off the floor and enforces door-bank coverage, capacity, bulk, and no further stacking', () => {
+test('V2 keeps real face-up cabinets off the floor and enforces both explicit door-rider thresholds, capacity, bulk, and no further stacking', () => {
   const api = loadV2();
   const g = rectangularTrailer(96);
+  assert.equal(api.constants.doorRiderSupport, 0.85);
+  assert.equal(api.constants.doorBankCoverage, 0.85);
+  assert.equal(Object.hasOwn(api.constants, 'doorCover'), false);
+
   const faceCab = {id:'face',w:30,h:30,d:24,stackOn:false,cls:'wall'};
   const faceUp = {x:0,y:0,z:0,w:30,h:24,d:30,pose:'back',cls:'wall',cab:faceCab,carrying:0};
   const upperCab = {id:'upper',w:30,h:10,d:30,stackOn:false,cls:'wall'};
   const floorFaceUp = {x:40,y:0,z:0,w:30,h:24,d:30,pose:'back',cls:'wall',cab:faceCab,standMargin:3};
   assert.equal(api.validatePlacement(g, 1, floorFaceUp, 0.5, {boxes:[]}).ok, false);
+
   const qualifying = {x:0,y:24.5,z:0,w:30,h:10,d:30,pose:'side',cls:'wall',cab:upperCab,standMargin:3};
   assert.equal(api.validatePlacement(g, 1, qualifying, 0.5, {boxes:[faceUp]}).ok, true);
-  const insufficientCoverage = Object.assign({}, qualifying, {w:20,d:20});
-  assert.equal(api.validatePlacement(g, 1, insufficientCoverage, 0.5, {boxes:[faceUp]}).ok, false);
+
+  // The underlying door bank is fully covered, but only 30/36 = 83.3% of the rider is supported.
+  const insufficientRiderSupport = Object.assign({}, qualifying, {w:36});
+  assert.equal(api.validatePlacement(g, 1, insufficientRiderSupport, 0.5, {boxes:[faceUp]}).ok, false);
+
+  // Jesse's explicit shop rule: 24 × 30 on a 30 × 30 door bank is 100% supported
+  // as a rider but covers only 80% of the door bank, so it must fail independently.
+  const insufficientDoorBankCoverage = Object.assign({}, qualifying, {w:24});
+  assert.equal(api.validatePlacement(g, 1, insufficientDoorBankCoverage, 0.5, {boxes:[faceUp]}).ok, false);
+
+  const stateForNarrowRider = api.analyzeLoadState(g, [faceUp, insufficientDoorBankCoverage], 1, 0.5);
+  assert.ok(stateForNarrowRider.violations.some(v => v.code==='DOOR_BANK_COVERAGE'));
+  const stateForWideRider = api.analyzeLoadState(g, [faceUp, insufficientRiderSupport], 1, 0.5);
+  assert.ok(stateForWideRider.violations.some(v => v.code==='DOOR_RIDER_SUPPORT'));
+
   const bulky = Object.assign({}, qualifying, {cab:{id:'bulky',w:40,h:40,d:40}, cls:'base', pose:'upright'});
   assert.equal(api.validatePlacement(g, 1, bulky, 0.5, {boxes:[faceUp]}).ok, false);
   const occupiedDoorBank = Object.assign({}, faceUp, {carrying:1});
