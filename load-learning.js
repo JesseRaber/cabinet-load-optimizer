@@ -175,9 +175,13 @@ function confidence(n, share){
 }
 function fd(v){ return (typeof fmtDim === 'function') ? fmtDim(Math.abs(v)) : Math.abs(v).toFixed(1); }
 function pct(x){ return Math.round(x*100) + '%'; }
+function activePoseOrder(){
+  const api=window.CLO_RULES_V2;
+  return (api && api.poseOrder) || POSE_ORDER;
+}
 function orderOf(cls){
-  try{ return (POSE_ORDER[cls] || POSE_ORDER.other).map(p=>POSE_NAME[p]||p).join(' → '); }
-  catch(e){ return '(see POSE_ORDER in the app)'; }
+  try{ const order=activePoseOrder(); return (order[cls] || order.other).map(p=>POSE_NAME[p]||p).join(' → '); }
+  catch(e){ return '(see POSE_ORDER in load-rules-v2.js)'; }
 }
 
 /* ============================================================================
@@ -217,7 +221,7 @@ function analyse(){
               + `The packer laid ${autoTotals[cls]||0} ${kind(cls)}(s) in total across the runs on file.`,
       suggest: `Try <b>${POSE_NAME[to]}</b> ahead of <b>${POSE_NAME[from]}</b> for this kind. `
              + `The order right now is <code>${orderOf(cls)}</code>.`,
-      where: `POSE_ORDER.${cls} in cabinet-load-optimizer.html`
+      where: `POSE_ORDER.${cls} in load-rules-v2.js (keep the fallback copy in cabinet-load-optimizer.html synchronized)`
     });
   }
 
@@ -234,7 +238,7 @@ function analyse(){
               + `${pct(share)} of the ${b.mv} moves you made to this kind.`,
       suggest: `Offer the turned version of each pose first for this kind, so the search tries the long way `
              + `across the trailer before the long way along it.`,
-      where: `makePoses() — the order the rot:true variants are pushed`
+      where: `makePoses() in load-rules-v2.js — the order the rot:true variants are pushed`
     });
   }
 
@@ -254,7 +258,7 @@ function analyse(){
         + `existing floor pass. It is currently reaching the deck only by spilling into the "layers above" queue.`
         : `Stop trying this kind on the floor first. Send it straight to the layers above so the deck is left `
         + `for the pieces that carry weight.`,
-      where: `packLoad() — the phase order, and which classes get O('floor')`
+      where: `packLoad() in load-rules-v2.js — the phase order, and which classes get O('floor')`
     });
   }
 
@@ -281,7 +285,7 @@ function analyse(){
           + `sort order for its phase.`
           : `The scan fills from the left wall. A consistent drift toward ${toward} suggests this kind should be `
           + `placed after the pieces it is being pushed past, not before them.`,
-        where: `packLoad() — the sort comparators (byVol / byWide) and the phase each class sits in`
+        where: `packLoad() in load-rules-v2.js — the sort comparators (byVol / byWide) and the phase each class sits in`
       });
     }
   }
@@ -304,7 +308,7 @@ function analyse(){
       suggest: `The candidate-position search is giving up while there is still room. Widen it for these pieces — `
              + `either allow the pose you settled on earlier in the preference list, or add a final pass that `
              + `retries anything in the failed list against every surface before reporting it as unfittable.`,
-      where: `packLoad() — the failed list, and tryPlace()'s candidate positions`
+      where: `packLoad() and tryPlace() in load-rules-v2.js — the failed list and candidate positions`
     });
   }
 
@@ -322,7 +326,7 @@ function analyse(){
       suggest: `Face up is supposed to be the last resort for a cabinet, because whatever goes on top rides on `
              + `the doors. If it is being chosen while an on-its-side spot existed, the side pose is being `
              + `rejected too readily — check the stand-up and support tests before the back pose is offered.`,
-      where: `packLoad() — the pref / noBack fallback, and isFaceUp() handling`
+      where: `packLoad() and isFaceUp() in load-rules-v2.js — the pref / noBack fallback and door-bank handling`
     });
   }
 

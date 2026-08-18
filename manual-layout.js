@@ -77,7 +77,7 @@ function poseBox(cab, pose, rot){
 function pinBox(cab){
   const b = poseBox(cab, cab.pin.pose, cab.pin.rot);
   return { x:cab.pin.x, y:cab.pin.y, z:cab.pin.z, w:b.w, h:b.h, d:b.d,
-           pose:cab.pin.pose, rot:cab.pin.rot, cls:cabClass(cab), cab, pinned:true };
+           pose:cab.pin.pose, rot:cab.pin.rot, cls:cabClass(cab), cab, pinned:true, standMargin:curSC() };
 }
 function boxOf(cab){ return results ? results.placed.find(p=>p.cab.id===cab.id) : null; }
 function inTrailer(cab){ return !!boxOf(cab); }
@@ -211,6 +211,13 @@ function unpin(cab){                         // leave it there, let the packer m
   const p = boxOf(cab); if(p){ p.pinned=false; delete p.warn; }
   say(`${cab.rc} unpinned — the optimizer may move it.`);
   saveAll(); refreshAll();
+}
+function clearHandPlacements(){
+  for(const c of cabinets) if(c.pin) delete c.pin;
+  results = null; M.sel = null;
+  saveAll();
+  say('Hand placements cleared. Press Optimize Load to repack.');
+  refreshAll();
 }
 function say(msg, kind){ M.msg = msg||''; M.msgKind = kind||'info'; const s=el('ml-status'); if(s) paintStatus(s); }
 
@@ -360,28 +367,44 @@ window.optimize = function(){
   for(const cab of cabinets){
     if(!cab.pin) continue;
     const p = pinBox(cab);
-    const chk = checkPlace(g, seed, gap, p, ply);
-    if(!chk.ok){ p.warn = chk.why.join('; '); addPinIssue(cab,chk.why); }
+    if(!window.CLO_RULES_V2){
+      const chk = checkPlace(g, seed, gap, p, ply);
+      if(!chk.ok){ p.warn = chk.why.join('; '); addPinIssue(cab,chk.why); }
+    }
     seed.push(p);
   }
   if(window.CLO_RULES_V2){
-    const state=window.CLO_RULES_V2.analyzeLoadState(g,seed,gap,ply);
+    const api=window.CLO_RULES_V2;
+    const state=api.analyzeLoadState(g,seed,gap,ply);
     seed=state.boxes;
     for(const p of seed){
+      const others=state.boxes.filter(q=>q.cab.id!==p.cab.id);
+      const validation=api.validatePlacement(g,gap,Object.assign({},p,{standMargin:SC}),ply,{boxes:others});
       const vs=state.byCabinetId[p.cab.id]||[];
-      if(!vs.length) continue;
-      const why=[...new Set(vs.map(v=>v.message))];
+      const why=[...new Set([
+        ...(!validation.ok ? [validation.message] : []),
+        ...vs.map(v=>v.message)
+      ].filter(Boolean))];
+      if(!why.length) continue;
       p.warn=[p.warn,...why].filter(Boolean).join('; ');
       addPinIssue(p.cab,why);
     }
   }
   const pinIssues=[...pinIssueMap.values()];
+  if(pinIssues.length){
+    results = { trailer:t, geom:g, placed:seed, failed:[], gap, ply, pinIssues };
+    resequence(); saveAll(); updateStats();
+    say('Optimize stopped: fix the highlighted pinned cabinet placement(s) before packing around them.', 'warn');
+    if(!el('tab-manual').classList.contains('hidden')) renderManual();
+    return;
+  }
 
   /* ---- Everything else: the app's own engine packs around them. packLoad()
      owns the loading rules -- bases upright on the deck, tall and wall cabinets
      on their side with the end panel down, panels and trim lying flat in the
-     gaps, a cabinet face up only as a last resort and never with anything on
-     top of it. Those rules live in ONE place. Do not restate them here. ---- */
+     gaps, a cabinet face up only as a last resort and never on the floor. The
+     V2 engine may allow one qualifying piece on its door bank; nothing may ride
+     above that piece. Those rules live in ONE place. Do not restate them here. ---- */
   const r = packLoad(cabinets.filter(c=>!c.pin), g,
                      { gap, ply, allowStack, allowBack, standMargin:SC, seed });
 
@@ -652,10 +675,7 @@ function injectUI(){
     if(!pinned().length) return say('There are no hand placements.', 'warn');
     if(!confirm('Remove every hand placement? Cabinets go back to being packed automatically.')) return;
     pushUndo('clear hand placements');
-    for(const c of cabinets) if(c.pin) delete c.pin;
-    results = null; M.sel = null;
-    say('Hand placements cleared. Press Optimize Load to repack.');
-    refreshAll();
+    clearHandPlacements();
   });
   paintUndoBtns();
 }
@@ -725,7 +745,7 @@ function renderTools(){
       ${fmtDim(cab.w)} × ${fmtDim(cab.h)} × ${fmtDim(cab.d)} · lying <b>${poseText({pose})}</b>${rot?', turned 90°':''}<br>
       Footprint ${fmtDim(bx.d)}" along the trailer × ${fmtDim(bx.w)}" across, ${fmtDim(bx.h)}" tall
       ${p ? `<br>${fmtDim(M.g.totalL-(p.z+p.d))}" from the rear doors, ${fmtDim(p.x)}" from the left wall${Math.abs(p.y-floorYAt(M.g,p.z))<0.5?'':', stacked at '+fmtDim(p.y)+'"'}` : ''}
-      ${p && p.warn ? `<br><span class="text-red-600 font-bold">⚠ ${p.warn}</span>` : ''}
+      ${p && p.warn ? `<br><span class="text-red-600 font-bold">⚠ ${esc(p.warn)}</span>` : ''}
     </div>
     <div class="flex flex-wrap gap-1.5">
       <button class="btn btn-gray !py-1 !px-2 text-xs" data-act="rot" title="Swap which way it faces across the trailer">↻ Turn 90°</button>
@@ -872,23 +892,32 @@ function startDrag(evt, cab, existing){
   window.addEventListener('pointercancel', onDragCancel);
 }
 function v2Check(g, others, gap, box, ply, prepared){
-  const legacy=checkPlace(g,others,gap,box,ply);
+  const poseClearance=typeof validatePoseClearance==='function'
+    ? validatePoseClearance(box.cab, box.pose, box.y, g.H, curSC())
+    : {ok:box.pose!=='upright', message:'Cannot verify upright tip-up clearance.'};
+  if(!poseClearance.ok) return {ok:false, code:poseClearance.code, why:[poseClearance.message], supported:false};
   const api=window.CLO_RULES_V2;
-  if(!api) return legacy;
+  if(!api || typeof api.validatePlacement!=='function') return checkPlace(g,others,gap,box,ply);
   const state=prepared ? {boxes:prepared.boxes} : api.analyzeLoadState(g,others,gap,ply);
-  const rep=api.canPlace(g,null,gap,box.x,box.y,box.z,box.w,box.h,box.d,
-                         ply,box.pose,cabClass(box.cab||{}),box.cab,state.boxes);
-  if(rep) return legacy;
-  if(legacy.ok) return {ok:false,v2Rejected:true,why:['the packer rules refuse this spot (forward restraint or door limit)'],supported:legacy.supported};
-  return Object.assign({},legacy,{v2Rejected:true});
+  const candidate=Object.assign({},box,{cls:cabClass(box.cab||{}),standMargin:curSC()});
+  const result=api.validatePlacement(g,gap,candidate,ply,state);
+  return result.ok
+    ? {ok:true, why:[], supported:true, report:result.report}
+    : {ok:false, v2Rejected:true, code:result.code, why:[result.message || 'The active V2 rules refuse this spot.'], supported:false};
 }
 function annotateExistingLayout(g, boxes, gap, ply){
+  const api=window.CLO_RULES_V2;
   for(const p of boxes){
     delete p.warn;
-    const chk=checkPlace(g,boxes.filter(q=>q!==p),gap,p,ply);
-    if(!chk.ok) p.warn=chk.why.join('; ');
+    const others=boxes.filter(q=>q!==p);
+    if(api && typeof api.validatePlacement==='function'){
+      const validation=api.validatePlacement(g,gap,Object.assign({},p,{standMargin:curSC()}),ply,{boxes:others});
+      if(!validation.ok) p.warn=validation.message;
+    } else {
+      const chk=checkPlace(g,others,gap,p,ply);
+      if(!chk.ok) p.warn=chk.why.join('; ');
+    }
   }
-  const api=window.CLO_RULES_V2;
   if(!api) return boxes;
   const state=api.analyzeLoadState(g,boxes,gap,ply);
   const byId=new Map(boxes.map(p=>[p.cab.id,p]));
@@ -1104,7 +1133,7 @@ window.updateStats = function(){
       <b class="text-slate-400">#${p.seq}</b>
       <div><b>${esc(p.cab.rc)}</b> ${esc(p.cab.name)}${p.pinned?' <span title="placed by hand">📌</span>':''}${isBulky(p.cab)?' <span class="text-[9px] font-bold text-white bg-orange-500 rounded px-1">2+ ppl</span>':''}<br>
       <span class="text-slate-500">${fmtDim(p.cab.w)}×${fmtDim(p.cab.h)}×${fmtDim(p.cab.d)} · ${fromRear.toFixed(0)}" from rear · ${p.x.toFixed(0)}" from left${onFloor?'':' · stacked at '+p.y.toFixed(0)+'"'} · <b class="text-slate-600">${poseText(p)}</b>${p.rot?', turned 90°':''}</span>
-      ${p.warn?`<br><span class="text-red-600 text-[10px] font-bold">⚠ ${p.warn}</span>`:''}</div>
+      ${p.warn?`<br><span class="text-red-600 text-[10px] font-bold">⚠ ${esc(p.warn)}</span>`:''}</div>
     </div>`;
   }).join('');
 };
@@ -1131,7 +1160,7 @@ window.loadingOrderHTML = function(){
         ${p.pinned?'<span style="border:1.5px solid #d97706;color:#92400e;font-size:9px;font-weight:800;padding:0 5px;border-radius:8px;margin-left:4px;white-space:nowrap">SET SPOT</span>':''}
         ${big?'<span style="background:#ea580c;color:#fff;font-size:9px;font-weight:800;padding:1px 6px;border-radius:8px;margin-left:4px;white-space:nowrap">LARGE · 2+ PEOPLE</span>':''}
         <div style="font-size:11px;color:#475569">${fmtDim(p.cab.w)}×${fmtDim(p.cab.h)}×${fmtDim(p.cab.d)} · <b>${poseText(p)}</b>${p.rot?', turned 90°':''} · ${fmtDim(fromRear)}" from rear doors, ${fmtDim(p.x)}" from left wall</div>
-        ${p.warn?`<div style="font-size:11px;color:#b91c1c;font-weight:700">⚠ ${p.warn}</div>`:''}
+        ${p.warn?`<div style="font-size:11px;color:#b91c1c;font-weight:700">⚠ ${esc(p.warn)}</div>`:''}
       </div>
     </div>`;
   }
@@ -1153,7 +1182,7 @@ window.plansHTML = function(forPrint){
       <td><b>${esc(p.cab.rc)}</b></td><td>${esc(p.cab.name)}</td>
       <td>${fmtDim(g.totalL-(p.z+p.d))}" fwd of rear doors, ${fmtDim(p.x)}" from left wall${Math.abs(p.y-floorYAt(g,p.z))<0.5?'':', stacked at '+fmtDim(p.y)+'"'}</td>
       <td><b>${poseText(p).replace(/^./,c=>c.toUpperCase())}</b>${p.rot?' · turned 90°':''}</td>
-      <td style="color:${p.warn?'#b91c1c':'#166534'}">${p.warn? '⚠ '+p.warn : 'OK'}</td>
+      <td style="color:${p.warn?'#b91c1c':'#166534'}">${p.warn? '⚠ '+esc(p.warn) : 'OK'}</td>
     </tr>`).join('');
   return out + `<div ${forPrint?'class="page-break"':''} style="margin-bottom:18px">
     <h2 style="font-size:15px;font-weight:800;background:#fffbeb;padding:5px 9px;border-left:4px solid #d97706;margin-bottom:8px">
@@ -1182,6 +1211,8 @@ window.clearCabs = function(){ M.sel = null; _clearCabs(); };
 window.CLO_ML = {
   beginDragAt,
   dragBoxAt,
+  validatePlacement:v2Check,
+  clearHandPlacements,
   commit,
   getPickables:()=>M.picks.slice(),
   getDragState:()=>M.drag,

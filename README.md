@@ -16,6 +16,8 @@ A browser-based 3D load optimizer for custom cabinet jobs. Load a job, pick a tr
 
 Everything runs client-side. The site is just static files on GitHub Pages — no server required.
 
+> **Spatial loading plan only.** Verify payload, axle/tongue load, center of gravity, cabinet support, tie-downs, door clearance, and actual trailer dimensions before transport. Weight, axle, GVWR/GAWR, center-of-gravity, and tie-down-capacity modelling are future major features; this version does not calculate them.
+
 ## How the load is built
 
 A short version of this lives in the app itself, under the collapsible **How the Load Gets Built** panel at the bottom of the Cabinets tab.
@@ -46,7 +48,7 @@ Two more rules apply to every piece:
 - **The snuggest spot wins.** Rather than taking the first position that fits, the packer looks at everything within a short window of the frontmost one and keeps whichever has the most contact with its neighbours, the walls and the deck under it. A piece that still ends up with air on *both* sides is marked **block it** on the manifest — the packer is telling you it could not wedge that one in, and the crew needs to shim or strap it.
 - **Nothing can slide forward and drop.** A load shifts toward the nose under braking, so a piece off the floor has to either butt something ahead of it or sit on a deck that keeps running forward far enough to catch it if it moves.
 
-The rules live in two places: `POSE_ORDER` and `packLoad()` in `cabinet-load-optimizer.html`, and `load-rules-v2.js`, which replaces the packing engine at run time. **`load-rules-v2.js` is the only add-on that changes how a load is packed** — the other three draw, arrange or report. Remove its `<script>` tag and the app falls straight back to the engine in the HTML.
+The fallback engine remains in `cabinet-load-optimizer.html`; `load-rules-v2.js` replaces it at run time and is the active engine when its script loads successfully. The app shows **Packing rules: V2 active** in the header in that normal state; a visible **Legacy active** warning means the fallback engine is in use. `POSE_ORDER` intentionally exists in both engines, and automated tests require the copies to remain synchronized. The other add-ons draw, arrange, or report; they do not change where cabinets are packed.
 
 ## Checking the cross-section — the end views
 
@@ -104,7 +106,7 @@ This add-on replaces the packing engine. It deletes nothing: pull the `<script>`
 - **Tight packing.** The engine in the HTML takes the first spot that works, which is usually a grid position with air on both sides. This one scores every spot within a short window and keeps the snuggest.
 - **Forward restraint.** Every piece off the floor has to be held against a shift toward the nose, as described above.
 - **Wall cabinets ride upside down.** A wall cabinet's bottom is finished and its top is not, so one standing upright goes on its head, unfinished top to the deck. Same box, same space — it only changes what the printout tells the crew, which now reads *standing upright, upside down*.
-- **One cabinet may ride on doors.** A face-up cabinet can carry exactly one piece; that piece carries nothing itself and has to cover at least 85% of the door bank, so the load spreads instead of point-loading a stile. Bases standing upright, and anything over roughly 16,000 cubic inches, stay off doors entirely. Once a bank has its one piece the airspace above it closes, so nothing can even overhang onto it. This is a deliberate loosening of the old nothing-on-doors rule, which was written to stop *several* layers landing on a door bank, not one.
+- **One cabinet may ride on doors.** A face-up cabinet can carry exactly one piece; that rider carries nothing itself and must satisfy **both** independent 85% tests: at least 85% of the rider’s own footprint must be supported, and the rider must cover at least 85% of the underlying door-bank footprint. Bases standing upright, and anything over roughly 16,000 cubic inches, stay off doors entirely. Once a bank has its one piece the airspace above it closes, so nothing can even overhang onto it. This is an explicit shop rule and a deliberate loosening of the old nothing-on-doors rule, which was written to stop *several* layers landing on a door bank, not one.
 - **A bay for the long talls,** as described above.
 
 Measured on a real 83-piece job in a 28' gooseneck: 71 cabinets loaded became 79, the share of faces butted against something went from 55% to 64%, volume used went from 44% to 61%, and the number of pieces that could have slid forward off their deck went from 13 to zero.
@@ -116,13 +118,14 @@ Every constant is a dial in the `V2` block at the top of the file, reachable as 
 - Room/cabinet IDs come out as `R{room}C{cab}` (e.g. `R1C5`), matching Mozaik.
 - Dimensions convert from Mozaik's internal millimeters to inches, rounded to the nearest 1/16".
 - **Stack On** in the cabinet list controls whether a piece can carry a layer when it's loaded *upright*. Pieces on their side always can. A piece lying face up can carry one light piece and no more, and only as a last resort — see `load-rules-v2.js` below.
-- Trailer profiles and header settings persist in `localStorage`, and also to `api/settings` if the copy you're running is served by something that provides it. Neither is required.
+- Trailer profiles and header settings always persist in browser `localStorage`. Optional NAS/server sync is used only when `window.CLO_SETTINGS_URL` is configured before the app's inline script runs. Leave it unset for GitHub Pages and other static copies; no settings API request is made in that mode.
 
 ## Files
 
 - `index.html` — a tiny redirect so the Pages root URL opens the app.
 - `cabinet-load-optimizer.html` — the app itself: self-contained, with drag-drop `.db` import, spreadsheet/CSV import, manual entry, 3D + 2D views, the packing engine, and the printable manifest.
 - `clo-utils.js` — context-safe text and attribute escaping shared by the browser UI and security tests.
+- `load-placement-core.js` — shared pure upright tip-up-clearance helper used by fallback packing, V2 packing, Manual Layout, and tests.
 - `manual-layout.js` — the Manual Layout tab: hand placement, pinning, 2D and 3D cabinet dragging, and undo/redo. Replaces `optimize()`, `showTab()`, `resize3D()` and `loadingOrderHTML()` at run time and decorates `draw3D()`, `renderCabs()` and `plansHTML()`. Deletes nothing.
 - `drag-3d.js` — pointer hit-testing, OrbitControls handoff, world-plane projection, and the reusable 3D drag ghost.
 - `load-learning.js` — the Tuning tab. Listens for the `clo:optimize` and `clo:edit` events that `manual-layout.js` announces on the document, and turns them into reviewable suggestions.
@@ -133,7 +136,7 @@ The add-ons are all optional. Remove a `<script>` tag and that feature is gone; 
 
 ### Script order
 
-The add-ons load at the end of `<body>`, in this order — `load-learning.js` wraps `showTab()`, which `manual-layout.js` has already replaced, so it has to come second, and `load-rules-v2.js` goes last so its engine is the one left standing:
+`load-placement-core.js` loads near the top of the page, before the inline fallback engine, because all placement paths use its upright tip-up-clearance helper. The add-ons then load at the end of `<body>` in this order — `load-learning.js` wraps `showTab()`, which `manual-layout.js` has already replaced, so it has to come second, and `load-rules-v2.js` goes last so its engine is the one left standing:
 
 ```html
 <script src="manual-layout.js"></script>
@@ -143,12 +146,16 @@ The add-ons load at the end of `<body>`, in this order — `load-learning.js` wr
 <script src="load-rules-v2.js"></script>
 ```
 
+### Import guardrails
+
+To prevent accidental browser exhaustion from an incorrect quantity column or a typo, the app validates values before expanding them into cabinets. The current limits are **2,500 items per current job**, **500 items per source row or manual entry**, **600 in per dimension**, **10 MB CSV/text input**, and **50 MB `JobData.db` input**. Imports above **500 expanded items**, CSV/text inputs above **2 MB**, and databases above **10 MB** ask for confirmation before proceeding. Invalid, zero, negative, fractional, or excessive quantities are rejected rather than silently coerced.
+
 If you're serving a copy from somewhere that caches aggressively (a NAS, for instance), add a version query string when you update a file so browsers pick up the new one:
 
 ```html
-<script src="manual-layout.js?v=3"></script>
-<script src="load-learning.js?v=2"></script>
+<script src="manual-layout.js?v=4"></script>
+<script src="load-learning.js?v=3"></script>
 <script src="end-views.js?v=2"></script>
 <script src="drag-3d.js?v=2"></script>
-<script src="load-rules-v2.js?v=2"></script>
+<script src="load-rules-v2.js?v=3"></script>
 ```

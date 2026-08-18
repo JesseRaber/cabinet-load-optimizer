@@ -80,7 +80,9 @@
     deadMax   : 16,     // a leftover slot narrower than this fits nothing
     wZ        : 1.0,    // penalty per inch further back
     wY        : 0.6,    // penalty per inch higher up
-    doorCover : 0.85,   // a piece on doors must be this well supported
+    // Explicit shop rule: a door rider must satisfy BOTH independent 85% tests.
+    doorRiderSupport : 0.85, // percentage of the rider's own footprint that must be supported
+    doorBankCoverage : 0.85, // percentage of each underlying face-up door bank that the rider must cover
     doorBulk  : 16000,  // in^3 — biggest piece allowed to ride on doors
     doorRatio : 1.0,    // and no bulkier than the cabinet whose doors it rides on
     tallBays  : true,   // give long tall cabinets their own bay before the bases scatter the floor
@@ -191,8 +193,13 @@
         if(doorSup>0){
           p.onDoors=true;
           if(!mayRideOnDoors(p.cab,p.cls,p.pose)) add('DOOR_PIECE',p,'this piece may not ride on cabinet doors');
-          if(sup<area*V2.doorCover) add('DOOR_COVER',p,'not enough of this piece is supported over the door bank');
+          if(sup<area*V2.doorRiderSupport)
+            add('DOOR_RIDER_SUPPORT',p,'less than the required rider footprint is supported over the door bank');
           for(const q of doorRests){
+            const doorArea=q.w*q.d;
+            const doorCoverage=doorArea>0 ? ov(p.x,p.x+p.w,q.x,q.x+q.w)*ov(p.z,p.z+p.d,q.z,q.z+q.d)/doorArea : 0;
+            if(doorCoverage<V2.doorBankCoverage)
+              add('DOOR_BANK_COVERAGE',p,'rider does not cover the required share of the door bank beneath it',q);
             if(bulk(p.cab||{w:0,h:0,d:0})>bulk(q.cab||{w:0,h:0,d:0})*V2.doorRatio)
               add('DOOR_BULK',p,'piece is too large for the door bank beneath it',q);
           }
@@ -241,8 +248,12 @@
 
   /* Returns null if the spot is illegal, otherwise a report used for scoring
      and for recording what the piece ended up resting on. */
-  function canPlace(g,ix,gap,x,y,z,w,h,d,ply,cpose,ccls,ccab,nearIn){
+  function canPlace(g,ix,gap,x,y,z,w,h,d,ply,cpose,ccls,ccab,nearIn,standMargin){
     const eps=0.01;
+    const poseClearance = typeof window.validatePoseClearance==='function'
+      ? window.validatePoseClearance(ccab, cpose, y, g.H, standMargin || 0)
+      : {ok:cpose!=='upright'};
+    if(!poseClearance.ok) return null;
     if(x<-eps || z<-eps) return null;
     if(y+h > g.H+eps) return null;
     if(z+d > g.totalL+eps) return null;
@@ -254,6 +265,8 @@
     const wr = availWidthAt(g,z);
     if(x < wr.min-eps || x+w > wr.max+eps) return null;
     const box={x,y,z,w,h,d};
+    const floorY=floorYAt(g,z);
+    if(cpose==='back' && Math.abs(y-floorY)<0.5 && !flatOnFloorOK(ccls)) return null;
     for(const wl of g.wells)  if(boxesOverlapXZ(box,wl,0) && boxesOverlapY(box,wl)) return null;
     if(g.ledges) for(const ob of g.ledges) if(boxesOverlapXZ(box,ob,0) && boxesOverlapY(box,ob)) return null;
 
@@ -333,9 +346,12 @@
 
     if(supDoors > 0){
       if(!ccab || !mayRideOnDoors(ccab, ccls, cpose)) return null;
-      if(sup < area*V2.doorCover) return null;         // spread across the door bank
+      if(sup < area*V2.doorRiderSupport) return null;  // rider must be sufficiently supported
       for(const p of rests){
         if(freeTier(p)!==1) continue;
+        const doorArea=p.w*p.d;
+        const doorCoverage=doorArea>0 ? ov(x,x+w,p.x,p.x+p.w)*ov(z,z+d,p.z,p.z+p.d)/doorArea : 0;
+        if(doorCoverage < V2.doorBankCoverage) return null; // rider must also cover this door bank
         if(bulk(ccab) > bulk(p.cab||{w:0,h:0,d:0}) * V2.doorRatio) return null;
       }
       rep.onDoors = true;
@@ -346,6 +362,22 @@
 
     rep.sup = sup; rep.cover = Math.min(1, sup/area); rep.rests = rests; rep.fore = true;
     return rep;
+  }
+
+  /* Structured manual-placement bridge. The manual editor must ask this active
+     V2 path instead of intersecting it with the old fallback validator. */
+  function validatePlacement(g, gap, candidate, ply, prepared){
+    const poseClearance = typeof window.validatePoseClearance==='function'
+      ? window.validatePoseClearance(candidate.cab, candidate.pose, candidate.y, g.H, candidate.standMargin || 0)
+      : {ok:candidate.pose!=='upright', code:'TIP_UP_HELPER_UNAVAILABLE', message:'Cannot verify upright tip-up clearance.'};
+    if(!poseClearance.ok) return poseClearance;
+    const near = prepared && prepared.boxes ? prepared.boxes : (prepared || []);
+    const report = canPlace(g, null, gap, candidate.x, candidate.y, candidate.z,
+      candidate.w, candidate.h, candidate.d, ply, candidate.pose,
+      candidate.cls || cabClass(candidate.cab || {}), candidate.cab, near, candidate.standMargin || 0);
+    return report
+      ? {ok:true, code:null, message:'', report}
+      : {ok:false, code:'V2_REJECTED', message:'The active V2 rules refuse this spot: check trailer geometry, support, door-bank limits, and forward restraint.'};
   }
 
   /* Score a legal spot. Lower is better: further back and higher up cost, and
@@ -465,7 +497,7 @@
           for(const x of xs){
             if(x < Math.max(0,wr.min)-0.01 || x > wr.max-o2.w+0.01) continue;
             if(x-px < 0.24) continue; px=x;
-            const rep = canPlace(g,ix,gap,x,y,z,o2.w,o2.h,o2.d,ply,o2.pose,cls,cab,near);
+            const rep = canPlace(g,ix,gap,x,y,z,o2.w,o2.h,o2.d,ply,o2.pose,cls,cab,near,o.standMargin || 0);
             if(!rep) continue;
             if(!o.doorDeck && rep.onDoors) continue;   // door decks only in the retry pass
             const sc = scoreOf(rep, x,y,z,o2.w,o2.h,o2.d, g);
@@ -596,7 +628,12 @@
   window.freeTier    = freeTier;
   window.isFaceUp    = isFaceUp;
   window.LOAD_RULES_V2 = V2;          // tunable from the browser console
-  window.CLO_RULES_V2 = { canPlace, analyzeLoadState, supportTier, freeTier, isFaceUp, constants:V2 };
+  window.CLO_V2_POSE_ORDER = POSE_ORDER;
+  window.CLO_RULES_V2 = { canPlace, validatePlacement, analyzeLoadState, supportTier, freeTier, isFaceUp, poseOrder:POSE_ORDER, constants:V2 };
+  window.CLO_ACTIVE_ENGINE = 'v2';
+  if(typeof window.setEngineStatus==='function') window.setEngineStatus('Packing rules: V2 active', false);
+  if(window.CLO_LEGACY_POSE_ORDER && JSON.stringify(window.CLO_LEGACY_POSE_ORDER)!==JSON.stringify(POSE_ORDER))
+    console.error('load-rules-v2: POSE_ORDER drift detected between legacy and V2 engines.');
   document.dispatchEvent(new CustomEvent('clo:rules-ready'));
 
   /* ---- tell the crew when a wall cabinet is on its head, and which
