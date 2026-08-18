@@ -155,8 +155,8 @@
   function isSupport(p){ return supportTier(p) > 0; }
 
   /* This is a conservative pose-selection guard, not a transport-dynamics model.
-     It applies only to an upright piece standing directly on the trailer floor;
-     no bracing exception is inferred in this first implementation. */
+     It applies to every upright piece, whether it rests on the floor, a deck, or
+     another cabinet; no bracing exception is inferred in this implementation. */
   function isFreeStandingUprightStable(w,h,d){
     const support=Math.min(w,d);
     return support>0 && h/support <= V2.maxFreeStandingSlenderness;
@@ -193,6 +193,8 @@
       const pending=[];
       for(const p of band){
         const fy=floorYAt(g,p.z);
+        if(p.pose==='upright' && !isFreeStandingUprightStable(p.w,p.h,p.d))
+          add('UPRIGHT_SLENDERNESS',p,'upright footprint is too narrow for its height without a modeled bracing system');
         if(Math.abs(p.y-fy)<0.5) continue;
         const area=p.w*p.d;
         let sup=0, doorSup=0;
@@ -301,7 +303,7 @@
     if(x < wr.min-eps || x+w > wr.max+eps) return null;
     const box={x,y,z,w,h,d};
     const floorY=floorYAt(g,z);
-    if(cpose==='upright' && Math.abs(y-floorY)<0.5 && !isFreeStandingUprightStable(w,h,d)) return null;
+    if(cpose==='upright' && !isFreeStandingUprightStable(w,h,d)) return null;
     if(cpose==='back' && Math.abs(y-floorY)<0.5 && !flatOnFloorOK(ccls)) return null;
     for(const wl of g.wells)  if(boxesOverlapXZ(box,wl,0) && boxesOverlapY(box,wl)) return null;
     if(g.ledges) for(const ob of g.ledges) if(boxesOverlapXZ(box,ob,0) && boxesOverlapY(box,ob)) return null;
@@ -408,6 +410,8 @@
       ? window.validatePoseClearance(candidate.cab, candidate.pose, candidate.y, g.H, candidate.standMargin || 0)
       : {ok:candidate.pose!=='upright', code:'TIP_UP_HELPER_UNAVAILABLE', message:'Cannot verify upright tip-up clearance.'};
     if(!poseClearance.ok) return poseClearance;
+    if(candidate.pose==='upright' && !isFreeStandingUprightStable(candidate.w,candidate.h,candidate.d))
+      return {ok:false, code:'UPRIGHT_SLENDERNESS', message:'The active V2 rules refuse this upright pose because its footprint is too narrow for its height without a modeled bracing system.'};
     const near = prepared && prepared.boxes ? prepared.boxes : (prepared || []);
     const report = canPlace(g, null, gap, candidate.x, candidate.y, candidate.z,
       candidate.w, candidate.h, candidate.d, ply, candidate.pose,
@@ -561,6 +565,31 @@
     return true;
   }
 
+  /* Protected face-up discovery must not touch the authoritative load until a
+     genuine multi-level stack exists. Try the candidates against a cloned layout,
+     then hand the complete staged result back to packLoad() for an all-or-nothing
+     commit. */
+  function stageProtectedFaceUpStack(candidates, g, gap, ply, o, placed){
+    const existing=new Set(placed.map(p=>p.cab));
+    const staged=placed.map(p=>Object.assign({},p));
+    const stagedIx=mkIndex();
+    for(const p of staged) idxAdd(stagedIx,p);
+    for(const it of candidates){
+      tryPlace(it.cab,it.cls,makePoses(it.cab,['back'],it.cls),g,stagedIx,staged,gap,ply,o);
+      const protectedAdded=staged.filter(p=>!existing.has(p.cab) && p.protectedFaceUpStack);
+      if(protectedAdded.length>=V2.minProtectedFaceUpStackDiscoveryCount)
+        return { staged, protectedCabinets:new Set(protectedAdded.map(p=>p.cab)) };
+    }
+    return null;
+  }
+
+  function commitStagedLayout(placed, ix, staged){
+    placed.splice(0,placed.length,...staged);
+    if(ix.b){ ix.b={}; ix.stamp=0; }
+    else if(Array.isArray(ix.items)) ix.items.length=0;
+    for(const p of placed) idxAdd(ix,p);
+  }
+
   /* =================== LOAD STRATEGY ===================
      1. Fill the trailer floor with base cabinets standing upright. They are the
         only pieces strong enough to carry several layers.
@@ -606,9 +635,11 @@
     const faceUpStacked=new Set();
     const protectedCandidates=all.filter(i=>!bayed.has(i.cab) && mayFormProtectedFaceUpStack(i.cab,i.cls)).sort(byVol);
     if(allowDoorDeck && allowStack && allowBack && protectedCandidates.length>=V2.minProtectedFaceUpStackDiscoveryCount){
-      for(const it of protectedCandidates){
-        if(tryPlace(it.cab,it.cls,makePoses(it.cab,['back'],it.cls),g,ix,placed,gap,ply,
-                    O('above',{doorDeck:true, protectedFaceUpStack:true}))) faceUpStacked.add(it.cab);
+      const staged=stageProtectedFaceUpStack(protectedCandidates,g,gap,ply,
+        O('above',{doorDeck:true, protectedFaceUpStack:true}),placed);
+      if(staged){
+        commitStagedLayout(placed,ix,staged.staged);
+        for(const cab of staged.protectedCabinets) faceUpStacked.add(cab);
       }
     }
 

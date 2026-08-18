@@ -130,6 +130,17 @@ test('Kemp mirror-frame geometry rejects a free-standing slender upright pose wh
   assert.equal(api.validatePlacement(g, 1, upright, 0.5, {boxes:[]}).ok, false);
   const side = {x:0,y:0,z:0,w:36,h:25,d:0.75,pose:'side',cls:'flat',cab:mirror,standMargin:3};
   assert.equal(api.validatePlacement(g, 1, side, 0.5, {boxes:[]}).ok, true);
+  const deckCab = {id:'elevated-deck',w:80,h:31.375,d:60,stackOn:true,cls:'base'};
+  const deck = {x:0,y:0,z:0,w:80,h:31.375,d:60,pose:'upright',cls:'base',cab:deckCab,carrying:0};
+  const elevated = {x:0,y:31.875,z:0,w:25,h:36,d:0.75,pose:'upright',cls:'flat',cab:mirror,standMargin:3};
+  const elevatedResult = api.validatePlacement(g, 1, elevated, 0.5, {boxes:[deck]});
+  assert.equal(elevatedResult.ok, false);
+  assert.equal(elevatedResult.code, 'UPRIGHT_SLENDERNESS');
+  const reconstructed = api.analyzeLoadState(g, [deck,elevated], 1, 0.5);
+  assert.ok(reconstructed.violations.some(v=>v.code==='UPRIGHT_SLENDERNESS' && v.cabinetId==='R3CN1'));
+  const normal = {id:'normal-upright',w:24,h:30,d:24,stackOn:true,cls:'base'};
+  const normalBox = {x:0,y:0,z:80,w:24,h:30,d:24,pose:'upright',cls:'base',cab:normal,standMargin:3};
+  assert.equal(api.validatePlacement(g, 1, normalBox, 0.5, {boxes:[]}).ok, true);
 });
 
 test('Kemp wall hutch geometry permits a capped three-level protected face-up stack with padding instruction and automatic discovery', () => {
@@ -163,6 +174,24 @@ test('Kemp wall hutch geometry permits a capped three-level protected face-up st
 
   const ordinaryPair = api.runtime.packLoad([baseCab,lowerCab,middleCab], g, {gap:1,ply:0.5,allowStack:true,allowBack:true,standMargin:3});
   assert.equal(ordinaryPair.placed.some(p=>p.protectedFaceUpStack), false);
+});
+
+test('protected face-up discovery is atomic when three shallow candidates cannot form a legal stack', () => {
+  const api = loadV2();
+  const g = rectangularTrailer(96);
+  const base = {id:'deck',w:80,h:24,d:60,stackOn:true,cls:'base'};
+  const candidates = [
+    {id:'candidate-a',w:64.625,h:58.25,d:15,stackOn:false,cls:'wall'},
+    {id:'candidate-b',w:64,h:58.25,d:15,stackOn:false,cls:'wall'},
+    {id:'candidate-c',w:40,h:58.25,d:15,stackOn:false,cls:'wall'}
+  ];
+  assert.equal(candidates.every(c=>api.mayFormProtectedFaceUpStack(c, c.cls)), true);
+  const result = api.runtime.packLoad([base,...candidates], g, {gap:1,ply:0.5,allowStack:true,allowBack:true,standMargin:3});
+  const candidatePlacements = result.placed.filter(p=>candidates.includes(p.cab));
+  assert.equal(candidatePlacements.length, 3);
+  assert.equal(candidatePlacements.some(p=>p.protectedFaceUpStack), false);
+  assert.equal(candidatePlacements.some(p=>p.pose==='back'), false);
+  assert.equal(result.failed.length, 0);
 });
 
 test('V2 enforces 60% support, plywood height, and forward restraint', () => {
