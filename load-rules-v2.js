@@ -285,12 +285,14 @@
 
   /* Returns null if the spot is illegal, otherwise a report used for scoring
      and for recording what the piece ended up resting on. */
-  function canPlace(g,ix,gap,x,y,z,w,h,d,ply,cpose,ccls,ccab,nearIn,standMargin){
+  function canPlace(g,ix,gap,x,y,z,w,h,d,ply,cpose,ccls,ccab,nearIn,standMargin,knownWidth,knownFloorY,collisionChecked){
     const eps=0.01;
-    const poseClearance = typeof window.validatePoseClearance==='function'
-      ? window.validatePoseClearance(ccab, cpose, y, g.H, standMargin || 0)
-      : {ok:cpose!=='upright'};
-    if(!poseClearance.ok) return null;
+    if(cpose==='upright'){
+      const poseClearance = typeof window.validatePoseClearance==='function'
+        ? window.validatePoseClearance(ccab, cpose, y, g.H, standMargin || 0)
+        : {ok:false};
+      if(!poseClearance.ok) return null;
+    }
     if(x<-eps || z<-eps) return null;
     if(y+h > g.H+eps) return null;
     if(z+d > g.totalL+eps) return null;
@@ -299,25 +301,33 @@
       if(inGN && z+d > g.gn.len+eps) return null;
       if(inGN && y < g.gn.rise-eps) return null;
     }
-    const wr = availWidthAt(g,z);
+    const wr = knownWidth || availWidthAt(g,z);
     if(x < wr.min-eps || x+w > wr.max+eps) return null;
-    const box={x,y,z,w,h,d};
-    const floorY=floorYAt(g,z);
+    const floorY=knownFloorY===undefined ? floorYAt(g,z) : knownFloorY;
     if(cpose==='upright' && !isFreeStandingUprightStable(w,h,d)) return null;
     if(cpose==='back' && Math.abs(y-floorY)<0.5 && !flatOnFloorOK(ccls)) return null;
-    for(const wl of g.wells)  if(boxesOverlapXZ(box,wl,0) && boxesOverlapY(box,wl)) return null;
-    if(g.ledges) for(const ob of g.ledges) if(boxesOverlapXZ(box,ob,0) && boxesOverlapY(box,ob)) return null;
+    for(const ob of g.wells){
+      if(x < ob.x+ob.w && ob.x < x+w && z < ob.z+ob.d && ob.z < z+d &&
+         y < ob.y+ob.h-0.01 && ob.y < y+h-0.01) return null;
+    }
+    if(g.ledges) for(const ob of g.ledges){
+      if(x < ob.x+ob.w && ob.x < x+w && z < ob.z+ob.d && ob.z < z+d &&
+         y < ob.y+ob.h-0.01 && ob.y < y+h-0.01) return null;
+    }
 
     const near = nearIn || idxNear(ix, z-gap-V2.foreRun-1, z+d+gap+1, _near);
-    for(let i=0;i<near.length;i++){ const p=near[i];
-      if(boxesOverlapY(box,p) && boxesOverlapXZ(box,p,gap)) return null; }
+    if(!collisionChecked) for(let i=0;i<near.length;i++){ const p=near[i];
+      if(y < p.y+p.h-0.01 && p.y < y+h-0.01 &&
+         x < p.x+p.w+gap && p.x < x+w+gap &&
+         z < p.z+p.d+gap && p.z < z+d+gap) return null;
+    }
 
     /* A face-up cabinet can continue a protected stack only through its one
        direct compatible face-up rider. Ordinary riders retain the old one-layer
        behavior through supportTier/freeTier. */
     const cIsFaceUp = (cpose==='back' && !flatOnFloorOK(ccls));
 
-    const fy = floorYAt(g,z);
+    const fy = floorY;
     const tol = gap + 0.75;
 
     /* contact — the measure of how snug the spot is */
@@ -465,13 +475,16 @@
       if(V2.tuckAhead) for(const o2 of poses) zs.push(p.z-o2.d-gap); // tuck in ahead of it
     }
     for(const wl of g.wells){ zs.push(wl.z+wl.d+gap); zs.push(wl.z-1e-9); }
-    for(let v=0; v<=g.totalL; v+=V2.zGrid) zs.push(v);
+    /* Boundary positions are where cabinets can butt, tuck, or clear an obstacle.
+       Once those positions cover the front, step, and obstacle boundaries, a
+       fixed longitudinal grid only repeats open-space checks between them. */
+    if(zs.length < 4) for(let v=0; v<=g.totalL; v+=V2.zGrid) zs.push(v);
     { const seen=new Set(), u=[];
       for(const v of zs){ const k=Math.round(v*4); if(!seen.has(k)){ seen.add(k); u.push(v); } }
       zs = u; }
     zs.sort((a,b)=>a-b);
 
-    const nearBuf=[], ys=[], xs=[], ySeen=new Set(), spans=[];
+    const nearBuf=[], ys=[], xs=[], relevantNear=[], colliders=[], ySeen=new Set(), spans=[];
     const minW = poses.reduce((m,p)=>Math.min(m,p.w),Infinity);
     let best=null, zCap=Infinity, pz=-99;
 
@@ -526,19 +539,59 @@
           if(y+o2.h > g.H+0.01) continue;
           if(o2.w > wr.max-wr.min+0.01) continue;
 
+          relevantNear.length=0;
+          for(let i=0;i<near.length;i++){ const p=near[i];
+            const overlapsY = y < p.y+p.h-0.01 && p.y < y+o2.h-0.01;
+            const maySupport = Math.abs(p.y+p.h+ply-y) < 1.25;
+            if(overlapsY || maySupport) relevantNear.push(p);
+          }
+          colliders.length=0;
           xs.length=0;
           xs.push(Math.max(0,wr.min), wr.max-o2.w);
-          for(let i=0;i<near.length;i++){ const p=near[i];
+          for(let i=0;i<relevantNear.length;i++){ const p=relevantNear[i];
+            const collisionZ = z < p.z+p.d+gap && p.z < z+o2.d+gap;
+            if(collisionZ && y < p.y+p.h-0.01 && p.y < y+o2.h-0.01) colliders.push(p);
             if(p.z > z+o2.d+gap || p.z+p.d < z-gap) continue;
+            const overlapsY = y < p.y+p.h-0.01 && p.y < y+o2.h-0.01;
             xs.push(p.x+p.w+gap); xs.push(p.x-o2.w-gap);
-            xs.push(p.x); xs.push(p.x+p.w-o2.w); }   // flush-edge alignment
-          for(let v=Math.max(0,wr.min); v<=wr.max-o2.w+0.01; v+=6) xs.push(v);
+            /* A flush edge would overlap this box at the current height and
+               length, so it cannot be legal. Keep flush scoring candidates only
+               where the box is separated in one of those dimensions. */
+            const overlapsZ = z < p.z+p.d+gap && p.z < z+o2.d+gap;
+            if(!overlapsY || !overlapsZ){
+              xs.push(p.x); xs.push(p.x+p.w-o2.w);
+            }
+          }
+          /* Once any cabinet-edge opening joins the two wall positions, derived
+             boundaries fully describe the available lane; reserve the fixed grid
+             for an otherwise empty cross-section. */
+          if(xs.length < 4) for(let v=Math.max(0,wr.min); v<=wr.max-o2.w+0.01; v+=15) xs.push(v);
           xs.sort((a,b)=>a-b);
           let px=-99;
           for(const x of xs){
             if(x < Math.max(0,wr.min)-0.01 || x > wr.max-o2.w+0.01) continue;
             if(x-px < 0.24) continue; px=x;
-            const rep = canPlace(g,ix,gap,x,y,z,o2.w,o2.h,o2.d,ply,o2.pose,cls,cab,near,o.standMargin || 0);
+            let collides=false;
+            for(let i=0;i<colliders.length;i++){ const p=colliders[i];
+              if(x < p.x+p.w+gap && p.x < x+o2.w+gap){ collides=true; break; }
+            }
+            if(collides) continue;
+            if(Math.abs(y-fy) >= 0.5){
+              /* This is a deliberately generous support upper bound: it counts
+                 every touching box, including ones that cannot actually carry.
+                 If even that cannot reach 60%, canPlace must reject the spot. */
+              let supportPotential=0;
+              for(let i=0;i<relevantNear.length;i++){ const p=relevantNear[i];
+                if(Math.abs(p.y+p.h+ply-y) < 1.25)
+                  supportPotential += ov(x,x+o2.w,p.x,p.x+p.w)*ov(z,z+o2.d,p.z,p.z+p.d);
+              }
+              for(const wl of g.wells){
+                if(Math.abs(wl.y+wl.h-y) < 1.25)
+                  supportPotential += ov(x,x+o2.w,wl.x,wl.x+wl.w)*ov(z,z+o2.d,wl.z,wl.z+wl.d);
+              }
+              if(supportPotential < o2.w*o2.d*0.6) continue;
+            }
+            const rep = canPlace(g,ix,gap,x,y,z,o2.w,o2.h,o2.d,ply,o2.pose,cls,cab,relevantNear,o.standMargin || 0,wr,fy,true);
             if(!rep) continue;
             if(!o.doorDeck && rep.onDoors) continue;   // door decks only in the retry pass
             const sc = scoreOf(rep, x,y,z,o2.w,o2.h,o2.d, g);
