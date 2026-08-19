@@ -638,21 +638,31 @@
       const staged=stageProtectedFaceUpStack(protectedCandidates,g,gap,ply,
         O('above',{doorDeck:true, protectedFaceUpStack:true}),placed);
       if(staged){
+        const beforeCommit=new Set(placed.map(p=>p.cab));
         commitStagedLayout(placed,ix,staged.staged);
-        for(const cab of staged.protectedCabinets) faceUpStacked.add(cab);
+        /* Everything the staged layout committed is now in the load, whether or
+           not it earned the protectedFaceUpStack flag. ALL of it must be excluded
+           from the later passes; excluding only the flagged pieces let the rest be
+           placed a second time, in a second pose, at a second location. */
+        for(const p of placed) if(!beforeCommit.has(p.cab)) faceUpStacked.add(p.cab);
       }
     }
 
     /* 3 — remaining floor: tall & wall cabinets on their side */
+    /* inLoad is the authoritative "already placed" test. bayed/faceUpStacked are
+       bookkeeping sets that can drift out of sync with `placed`; this cannot. */
+    const inLoad=()=>new Set(placed.map(p=>p.cab));
     const later=[];
-    for(const it of all.filter(i=>(i.cls==='tall'||i.cls==='wall') && !bayed.has(i.cab) && !faceUpStacked.has(i.cab)).sort(byVol))
+    { const done=inLoad();
+    for(const it of all.filter(i=>(i.cls==='tall'||i.cls==='wall') && !done.has(i.cab) && !bayed.has(i.cab) && !faceUpStacked.has(i.cab)).sort(byVol))
       if(!tryPlace(it.cab,it.cls,makePoses(it.cab,['side'],it.cls),g,ix,placed,gap,ply,O('floor')))
-        later.push(it);
+        later.push(it); }
 
     /* 4 — the layers above */
+    const done4=inLoad();
     const queue=[...spill, ...later,
                  ...all.filter(i=>i.cls!=='base'&&i.cls!=='tall'&&i.cls!=='wall')]
-                 .filter(i=>!bayed.has(i.cab) && !faceUpStacked.has(i.cab)).sort(byVol);
+                 .filter(i=>!done4.has(i.cab) && !bayed.has(i.cab) && !faceUpStacked.has(i.cab)).sort(byVol);
     const stillOut=[];
     for(const it of queue){
       const pref=(POSE_ORDER[it.cls]||POSE_ORDER.other).filter(k=>allowBack||k!=='back');
