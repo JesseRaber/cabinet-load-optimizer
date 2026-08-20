@@ -1,24 +1,23 @@
-#!/usr/bin/env node
 'use strict';
 
 /*
- * Manual V2 packing benchmark. Run with:
+ * Manual packing-runtime differential. Run with:
  *   node tests/bench-packing.js
  *
- * The harness measures the current working-tree V2 engine and the exact
- * pre-PR #8 engine from main in separate VM sandboxes. Each worker receives
- * the same seeded cabinet job and trailer; this reports per-job placement
- * deltas rather than only aggregate totals.
+ * The harness executes the preserved pre-refactor runtime plus its V2 rules and
+ * the current extracted runtime plus its V2 rules in isolated VM sandboxes.
+ * Every row compares the full ordered placement record, not only counts.
  */
 
-const {execFileSync, spawnSync} = require('node:child_process');
+const {spawnSync} = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const core = require('../load-placement-core.js');
 
-const MAIN_REF = 'abef03fc80ac30fafa224f51b7acef93ee5e4cdc';
-const MAIN_ENGINE_BLOB = 'f6ea90993e36a72642b7b5b042d838c504a7539d';
+const MAIN_REF = '56d83cfb1204677276f4b2b9bf9b90c6d6213892';
+const PRE_REFACTOR_ENGINE_BLOB = '8ca41c414cb9f901da57a47abf27cfac7358ebb6';
+const PRE_REFACTOR_HTML_BLOB = 'b2d950c41fbf88dc8308d2c83784f9e58a1c3135';
 const SIZES = [40, 86, 120, 175, 250];
 const GAPS = [0.5, 1];
 const CAPACITY_JOBS = [
@@ -27,56 +26,49 @@ const CAPACITY_JOBS = [
 ];
 const PER_JOB_TIMEOUT_MS = 20 * 60 * 1000;
 const root = path.join(__dirname, '..');
-const workingSource = fs.readFileSync(path.join(root, 'load-rules-v2.js'), 'utf8');
+const preservedRoot = process.env.CLO_PRE_REFACTOR_DIR || '/home/ubuntu/packing-worker-baseline';
+const currentRuntime = fs.readFileSync(path.join(root, 'packing-runtime.js'), 'utf8');
+const currentRules = fs.readFileSync(path.join(root, 'load-rules-v2.js'), 'utf8');
 const canPlacePattern = /function canPlace\(g,ix,gap,x,y,z,w,h,d,ply,cpose,ccls,ccab,nearIn,standMargin[^)]*\)\{/;
 
-function readMainSource() {
-  if(process.env.CLO_MAIN_ENGINE_PATH) return fs.readFileSync(process.env.CLO_MAIN_ENGINE_PATH, 'utf8');
-  return execFileSync('git', ['show', `${MAIN_REF}:load-rules-v2.js`], {cwd:root, encoding:'utf8'});
+function preservedFile(name) {
+  const file = path.join(preservedRoot, name);
+  if(!fs.existsSync(file)) throw new Error(`Preserved pre-refactor source is required: ${file}`);
+  return fs.readFileSync(file, 'utf8');
 }
 
-function loadV2WithCounter(source, label) {
-  const metrics = {canPlace:0};
-  const instrumented = source.replace(
-    canPlacePattern,
-    match => `${match}\n    metrics.canPlace += 1;`
-  );
-  if(instrumented === source) throw new Error(`Benchmark instrumentation could not locate canPlace() in ${label}.`);
+function extractPreRefactorRuntime(html) {
+  const clearance = html.match(/function validatePoseClearance\(cab, pose, y, trailerHeight, standMargin\)\{[\s\S]*?\n\}/);
+  const start = html.indexOf('function fmtDim(v)');
+  const end = html.indexOf('\nfunction optimize()', start);
+  if(!clearance || start < 0 || end < 0) throw new Error('Could not locate the preserved pre-refactor packing runtime closure.');
+  return `${clearance[0]}\n${html.slice(start, end)}`;
+}
 
-  const window = {
-    CLOPlacementCore: core,
-    validatePoseClearance: core.validatePoseClearance,
-    CLO_LEGACY_POSE_ORDER: {
-      base:['upright','side','back'], tall:['side','back','upright'], wall:['side','upright','back'],
-      flat:['back','side','upright'], pkg:['back','side','upright'], other:['side','upright','back']
-    }
-  };
+const preRuntime = extractPreRefactorRuntime(preservedFile('cabinet-load-optimizer.pre.html'));
+const preRules = preservedFile('load-rules-v2.pre.js');
+
+function sourceFor(engine) {
+  if(engine === 'pre') return {runtime:preRuntime, rules:preRules};
+  if(engine === 'working') return {runtime:currentRuntime, rules:currentRules};
+  throw new Error(`Unsupported engine: ${engine}`);
+}
+
+function loadEngine(engine) {
+  const source = sourceFor(engine);
+  const metrics = {canPlace:0};
+  const instrumentedRules = source.rules.replace(canPlacePattern, match => `${match}\n    metrics.canPlace += 1;`);
+  if(instrumentedRules === source.rules) throw new Error(`Benchmark instrumentation could not locate canPlace() in ${engine}.`);
+  const window = {CLOPlacementCore:core, validatePoseClearance:core.validatePoseClearance};
   const sandbox = {
-    console: {log(){}, warn(){}, error(){}}, window, metrics,
-    document: {dispatchEvent(){}}, CustomEvent: function CustomEvent(){},
-    packLoad(){}, geomOf(){},
-    cabClass(cab) { return cab.cls || 'base'; },
-    availWidthAt(g, z) {
-      if(!g.taper || z >= g.taper.end) return {min:0,max:g.W};
-      const width = Math.max(0, g.W * (z / g.taper.end));
-      return {min:(g.W-width)/2,max:(g.W+width)/2};
-    },
-    floorYAt(g, z) { return g.gn && z < g.gn.len-0.01 ? g.gn.rise : 0; },
-    mkIndex() { return {items:[]}; },
-    idxAdd(ix, p) { ix.items.push(p); },
-    idxNear(ix, z0, z1, out) {
-      out.length = 0;
-      for(const p of ix.items) if(p.z+p.d >= z0 && p.z <= z1) out.push(p);
-      return out;
-    },
-    boxesOverlapXZ(a,b,gap) {
-      return a.x < b.x+b.w+gap && b.x < a.x+a.w+gap && a.z < b.z+b.d+gap && b.z < a.z+a.d+gap;
-    },
-    boxesOverlapY(a,b) { return a.y < b.y+b.h-0.01 && b.y < a.y+a.h-0.01; },
+    console:{log(){}, warn(){}, error(){}}, window, metrics,
+    document:{dispatchEvent(){}}, CustomEvent:function CustomEvent(){},
     JSON, Math, Object, Set, Map, Array
   };
   vm.createContext(sandbox);
-  vm.runInContext(instrumented, sandbox, {filename:`${label}-load-rules-v2.js`});
+  vm.runInContext(source.runtime, sandbox, {filename:`${engine}-packing-runtime.js`});
+  vm.runInContext(instrumentedRules, sandbox, {filename:`${engine}-load-rules-v2.js`});
+  if(sandbox.window.CLO_ACTIVE_ENGINE !== 'v2') throw new Error(`${engine} did not activate V2.`);
   return {packLoad:sandbox.window.packLoad, metrics};
 }
 
@@ -99,17 +91,11 @@ function makeCabinets(count, seed) {
   for(let index=0; index<count; index++) {
     const type = index % 10;
     let cab;
-    if(type <= 3) {
-      cab = {cls:'base', name:'Base cabinet', w:step(random,21,42,3), h:step(random,30,36,1.5), d:step(random,21,27,3), stackOn:true};
-    } else if(type <= 5) {
-      cab = {cls:'wall', name:'Wall cabinet', w:step(random,18,48,3), h:step(random,24,42,3), d:step(random,12,18,3), stackOn:false};
-    } else if(type === 6) {
-      cab = {cls:'tall', name:'Tall pantry', w:step(random,18,36,3), h:step(random,78,90,3), d:step(random,21,27,3), stackOn:false};
-    } else if(type === 7) {
-      cab = {cls:'flat', name:'Finished panel', w:step(random,24,84,6), h:step(random,0.75,1.5,0.75), d:step(random,18,36,3), stackOn:false};
-    } else {
-      cab = {cls:'pkg', name:'Filler or trim package', w:step(random,6,24,3), h:step(random,3,12,3), d:step(random,24,48,3), stackOn:true};
-    }
+    if(type <= 3) cab = {cls:'base', name:'Base cabinet', w:step(random,21,42,3), h:step(random,30,36,1.5), d:step(random,21,27,3), stackOn:true};
+    else if(type <= 5) cab = {cls:'wall', name:'Wall cabinet', w:step(random,18,48,3), h:step(random,24,42,3), d:step(random,12,18,3), stackOn:false};
+    else if(type === 6) cab = {cls:'tall', name:'Tall pantry', w:step(random,18,36,3), h:step(random,78,90,3), d:step(random,21,27,3), stackOn:false};
+    else if(type === 7) cab = {cls:'flat', name:'Finished panel', w:step(random,24,84,6), h:step(random,0.75,1.5,0.75), d:step(random,18,36,3), stackOn:false};
+    else cab = {cls:'pkg', name:'Filler or trim package', w:step(random,6,24,3), h:step(random,3,12,3), d:step(random,24,48,3), stackOn:true};
     cabinets.push(Object.assign(cab, {id:`bench-${count}-${seed}-${index+1}`, rc:`B${index+1}`}));
   }
   return cabinets;
@@ -118,100 +104,85 @@ function makeCabinets(count, seed) {
 function gooseneckTrailer() {
   return {
     W:96, H:96, totalL:336,
-    wells:[
-      {x:0, y:0, z:48, w:12, h:14, d:72},
-      {x:84, y:0, z:48, w:12, h:14, d:72}
-    ],
+    wells:[{x:0, y:0, z:48, w:12, h:14, d:72}, {x:84, y:0, z:48, w:12, h:14, d:72}],
     ledges:[{x:0, y:0, z:312, w:8, h:96, d:24}],
-    gn:{len:72, rise:24, headroom:72},
-    taper:null
+    gn:{len:72, rise:24, headroom:72}, taper:null
   };
 }
 
-function standardSeed(size) {
-  return (0xC0FFEE ^ size) >>> 0;
-}
-
+function standardSeed(size) { return (0xC0FFEE ^ size) >>> 0; }
 function allJobs() {
   const standard = SIZES.map(size => ({kind:'size', job:`size-${size}`, size, seed:standardSeed(size)}));
-  const capacity = CAPACITY_JOBS.flatMap(({size, seeds}) =>
-    seeds.map(seed => ({kind:'capacity', job:`capacity-${size}-seed-${seed}`, size, seed}))
-  );
+  const capacity = CAPACITY_JOBS.flatMap(({size, seeds}) => seeds.map(seed => ({kind:'capacity', job:`capacity-${size}-seed-${seed}`, size, seed})));
   return [...standard, ...capacity];
 }
 
-function sourceFor(engine) {
-  if(engine === 'main') return readMainSource();
-  if(engine === 'working') return workingSource;
-  throw new Error(`Unsupported engine: ${engine}`);
+function placementRecords(placed) {
+  return placed.map(p => ({cabinetId:p.cab.id, x:p.x, y:p.y, z:p.z, pose:p.pose}));
+}
+
+function firstPlacementDifference(pre, working) {
+  const count = Math.max(pre.length, working.length);
+  for(let index=0; index<count; index++) {
+    if(JSON.stringify(pre[index]) !== JSON.stringify(working[index])) return {index, pre:pre[index] || null, working:working[index] || null};
+  }
+  return null;
 }
 
 function runWorker(engine, size, seed, gap, job) {
-  const {packLoad, metrics} = loadV2WithCounter(sourceFor(engine), engine);
+  const {packLoad, metrics} = loadEngine(engine);
   const cabinets = makeCabinets(size, seed);
   const started = process.hrtime.bigint();
-  const result = packLoad(cabinets, gooseneckTrailer(), {
-    gap, ply:0.5, standMargin:3, allowStack:true, allowBack:true
-  });
+  const result = packLoad(cabinets, gooseneckTrailer(), {gap, ply:0.5, standMargin:3, allowStack:true, allowBack:true});
   const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
   return {
     job, engine, size, seed, gap, status:'OK', ms:elapsedMs,
     placed:result.placed.length, failed:result.failed.length,
-    accounted:result.placed.length + result.failed.length, canPlace:metrics.canPlace
+    accounted:result.placed.length + result.failed.length, canPlace:metrics.canPlace,
+    placements:placementRecords(result.placed)
   };
+}
+
+function errorRow(engine, job, gap, status, detail) {
+  return {job:job.job, engine, size:job.size, seed:job.seed, gap, status, ms:null, placed:null, failed:null, accounted:null, canPlace:null, placements:null, detail};
 }
 
 function timedWorker(engine, job, gap) {
   const child = spawnSync(process.execPath, [__filename, '--worker', engine, String(job.size), String(job.seed), String(gap), job.job], {
-    cwd:root,
-    encoding:'utf8',
-    timeout:PER_JOB_TIMEOUT_MS,
-    maxBuffer:4*1024*1024,
-    env:{...process.env, CLO_MAIN_ENGINE_PATH:process.env.CLO_MAIN_ENGINE_PATH || ''}
+    cwd:root, encoding:'utf8', timeout:PER_JOB_TIMEOUT_MS, maxBuffer:8*1024*1024,
+    env:{...process.env, CLO_PRE_REFACTOR_DIR:preservedRoot}
   });
-  if(child.error && child.error.code === 'ETIMEDOUT') {
-    return {job:job.job, engine, size:job.size, seed:job.seed, gap, status:'TIMEOUT', ms:null, placed:null, failed:null, accounted:null, canPlace:null};
-  }
-  if(child.status !== 0) {
-    return {job:job.job, engine, size:job.size, seed:job.seed, gap, status:'ERROR', ms:null, placed:null, failed:null, accounted:null, canPlace:null, detail:(child.stderr || child.stdout || child.error?.message || 'worker failed').trim()};
-  }
-  try {
-    return JSON.parse(child.stdout);
-  } catch(error) {
-    return {job:job.job, engine, size:job.size, seed:job.seed, gap, status:'ERROR', ms:null, placed:null, failed:null, accounted:null, canPlace:null, detail:`Invalid worker output: ${child.stdout.trim()}`};
-  }
+  if(child.error && child.error.code === 'ETIMEDOUT') return errorRow(engine, job, gap, 'TIMEOUT', 'per-job timeout');
+  if(child.status !== 0) return errorRow(engine, job, gap, 'ERROR', (child.stderr || child.stdout || child.error?.message || 'worker failed').trim());
+  try { return JSON.parse(child.stdout); }
+  catch(error) { return errorRow(engine, job, gap, 'ERROR', `Invalid worker output: ${child.stdout.trim()}`); }
 }
 
 function runParent() {
   const rows = [];
-  for(const gap of GAPS) for(const job of allJobs()) for(const engine of ['main','working']) rows.push(timedWorker(engine, job, gap));
-
+  for(const gap of GAPS) for(const job of allJobs()) for(const engine of ['pre','working']) rows.push(timedWorker(engine, job, gap));
   console.log(`Node ${process.version} | ${process.platform} ${process.arch} | per-job timeout ${PER_JOB_TIMEOUT_MS} ms`);
-  console.log(`Main engine: ${MAIN_REF} (${MAIN_ENGINE_BLOB}); working engine: load-rules-v2.js from this checkout.`);
+  console.log(`Preserved pre-refactor engine: ${PRE_REFACTOR_ENGINE_BLOB}; preserved HTML: ${PRE_REFACTOR_HTML_BLOB}; working runtime: packing-runtime.js.`);
   console.log('Synthetic profile: 28 ft gooseneck, two wheel wells, rear door frame; options ply=0.5, standMargin=3, allowStack=true, allowBack=true.');
   console.log('Job                    | Gap | Engine  | Status  | Wall ms    | Placed | Failed | Accounted | canPlace calls');
   console.log('-----------------------|-----|---------|---------|------------|--------|--------|-----------|---------------');
   for(const row of rows) {
     const ms = row.ms === null ? '—' : row.ms.toFixed(3);
-    const placed = row.placed === null ? '—' : String(row.placed);
-    const failed = row.failed === null ? '—' : String(row.failed);
-    const accounted = row.accounted === null ? '—' : String(row.accounted);
-    const calls = row.canPlace === null ? '—' : String(row.canPlace);
-    console.log(`${row.job.padEnd(23)}| ${String(row.gap).padStart(3)} | ${row.engine.padEnd(8)}| ${row.status.padEnd(8)}| ${ms.padStart(10)} | ${placed.padStart(6)} | ${failed.padStart(6)} | ${accounted.padStart(9)} | ${calls.padStart(13)}`);
+    console.log(`${row.job.padEnd(23)}| ${String(row.gap).padStart(3)} | ${row.engine.padEnd(8)}| ${row.status.padEnd(8)}| ${ms.padStart(10)} | ${String(row.placed ?? '—').padStart(6)} | ${String(row.failed ?? '—').padStart(6)} | ${String(row.accounted ?? '—').padStart(9)} | ${String(row.canPlace ?? '—').padStart(13)}`);
     if(row.detail) console.log(`  ${row.detail}`);
   }
-
-  console.log('\nDifferential placement results (working minus main):');
-  console.log('Job                    | Gap | Main placed | Working placed | Delta | Status');
-  console.log('-----------------------|-----|-------------|----------------|-------|--------');
+  console.log('\nFull placement-record differential (working versus preserved pre-refactor):');
+  console.log('Job                    | Gap | Placement records | Status');
+  console.log('-----------------------|-----|-------------------|--------');
   for(const gap of GAPS) for(const job of allJobs()) {
-    const main = rows.find(row => row.job === job.job && row.gap === gap && row.engine === 'main');
+    const pre = rows.find(row => row.job === job.job && row.gap === gap && row.engine === 'pre');
     const working = rows.find(row => row.job === job.job && row.gap === gap && row.engine === 'working');
-    const delta = main?.placed === null || working?.placed === null ? '—' : String(working.placed-main.placed);
-    const status = main?.status === 'OK' && working?.status === 'OK' ? (Number(delta) >= 0 ? 'PASS' : 'FAIL') : 'UNVERIFIED';
-    console.log(`${job.job.padEnd(23)}| ${String(gap).padStart(3)} | ${String(main?.placed ?? '—').padStart(11)} | ${String(working?.placed ?? '—').padStart(14)} | ${delta.padStart(5)} | ${status}`);
+    const difference = pre?.status === 'OK' && working?.status === 'OK' ? firstPlacementDifference(pre.placements, working.placements) : null;
+    const status = pre?.status === 'OK' && working?.status === 'OK' ? (difference ? 'FAIL' : 'PASS') : 'UNVERIFIED';
+    console.log(`${job.job.padEnd(23)}| ${String(gap).padStart(3)} | ${String(pre?.placements?.length ?? '—').padStart(17)} | ${status}`);
+    if(difference) console.log(`  first difference at index ${difference.index}: pre=${JSON.stringify(difference.pre)} working=${JSON.stringify(difference.working)}`);
   }
-  console.log(`\nJSON_RESULTS=${JSON.stringify({mainRef:MAIN_REF, mainBlob:MAIN_ENGINE_BLOB, rows})}`);
+  console.log(`\nJSON_RESULTS=${JSON.stringify({mainRef:MAIN_REF, preRefactorEngineBlob:PRE_REFACTOR_ENGINE_BLOB, preRefactorHtmlBlob:PRE_REFACTOR_HTML_BLOB, rows})}`);
 }
 
 if(process.argv[2] === '--worker') {
