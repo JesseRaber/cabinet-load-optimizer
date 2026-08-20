@@ -628,6 +628,21 @@
     const byVol =(a,b)=>vol(b.cab)-vol(a.cab);
     const byWide=(a,b)=>b.cab.w-a.cab.w || vol(b.cab)-vol(a.cab);
     const all=cabinets.map(c=>({cab:c, cls:cabClass(c)}));
+    const onProgress=typeof opt.onProgress==='function' ? opt.onProgress : null;
+    const attemptedCabs=new Set(); let lastProgress=0;
+    const noteAttempt=cab=>{
+      if(!onProgress || attemptedCabs.has(cab)) return;
+      attemptedCabs.add(cab);
+      const attempted=attemptedCabs.size;
+      if(attempted===all.length || attempted-lastProgress>=8){
+        lastProgress=attempted;
+        onProgress({attempted,total:all.length});
+      }
+    };
+    const tryWithProgress=(cab,cls,poses,g0,ix0,placed0,gap0,ply0,options)=>{
+      noteAttempt(cab);
+      return tryPlace(cab,cls,poses,g0,ix0,placed0,gap0,ply0,options);
+    };
     const O=(levels,extra)=>Object.assign({levels,allowStack,standMargin:SC},extra||{});
 
     /* 0 — bays for the long talls. A tall wider than the trailer has to lie
@@ -639,14 +654,14 @@
                            .sort((a,b)=>b.cab.h-a.cab.h || b.cab.w-a.cab.w);
       /* Any that will not nest fall through to the normal passes below. */
       for(const it of longTalls)
-        tryPlace(it.cab,it.cls,makePoses(it.cab,['side'],it.cls),g,ix,placed,gap,ply,O('any'));
+        tryWithProgress(it.cab,it.cls,makePoses(it.cab,['side'],it.cls),g,ix,placed,gap,ply,O('any'));
     }
     const bayed = new Set(placed.map(p=>p.cab));
 
     /* 1 — the bottom deck: base cabinets standing upright on the floor */
     const spill=[];
     for(const it of all.filter(i=>i.cls==='base').sort(byWide))
-      if(!tryPlace(it.cab,it.cls,makePoses(it.cab,['upright'],it.cls),g,ix,placed,gap,ply,O('floor')))
+      if(!tryWithProgress(it.cab,it.cls,makePoses(it.cab,['upright'],it.cls),g,ix,placed,gap,ply,O('floor')))
         spill.push(it);
 
     /* 2 — before using remaining floor, let shallow wall/hutch cabinets try a
@@ -655,6 +670,7 @@
     const faceUpStacked=new Set();
     const protectedCandidates=all.filter(i=>!bayed.has(i.cab) && mayFormProtectedFaceUpStack(i.cab,i.cls)).sort(byVol);
     if(allowDoorDeck && allowStack && allowBack && protectedCandidates.length>=V2.minProtectedFaceUpStackDiscoveryCount){
+      for(const it of protectedCandidates) noteAttempt(it.cab);
       const staged=stageProtectedFaceUpStack(protectedCandidates,g,gap,ply,
         O('above',{doorDeck:true, protectedFaceUpStack:true}),placed);
       if(staged){
@@ -675,7 +691,7 @@
     const later=[];
     { const done=inLoad();
     for(const it of all.filter(i=>(i.cls==='tall'||i.cls==='wall') && !done.has(i.cab) && !bayed.has(i.cab) && !faceUpStacked.has(i.cab)).sort(byVol))
-      if(!tryPlace(it.cab,it.cls,makePoses(it.cab,['side'],it.cls),g,ix,placed,gap,ply,O('floor')))
+      if(!tryWithProgress(it.cab,it.cls,makePoses(it.cab,['side'],it.cls),g,ix,placed,gap,ply,O('floor')))
         later.push(it); }
 
     /* 4 — the layers above */
@@ -687,10 +703,10 @@
     for(const it of queue){
       const pref=(POSE_ORDER[it.cls]||POSE_ORDER.other).filter(k=>allowBack||k!=='back');
       const noBack=pref.filter(k=>k!=='back');
-      let ok = tryPlace(it.cab,it.cls,makePoses(it.cab,pref,it.cls),g,ix,placed,gap,ply,O('above'))
-            || tryPlace(it.cab,it.cls,makePoses(it.cab,noBack.length?noBack:pref,it.cls),g,ix,placed,gap,ply,O('any'));
+      let ok = tryWithProgress(it.cab,it.cls,makePoses(it.cab,pref,it.cls),g,ix,placed,gap,ply,O('above'))
+            || tryWithProgress(it.cab,it.cls,makePoses(it.cab,noBack.length?noBack:pref,it.cls),g,ix,placed,gap,ply,O('any'));
       if(!ok && allowBack)
-        ok = tryPlace(it.cab,it.cls,makePoses(it.cab,['back','side','upright'],it.cls),g,ix,placed,gap,ply,
+        ok = tryWithProgress(it.cab,it.cls,makePoses(it.cab,['back','side','upright'],it.cls),g,ix,placed,gap,ply,
                       O('any',{flatOnFloor:true}));
       if(!ok) stillOut.push(it);
     }
@@ -700,7 +716,7 @@
       let ok=false;
       if(allowDoorDeck && allowStack){
         const pref=(POSE_ORDER[it.cls]||POSE_ORDER.other).filter(k=>allowBack||k!=='back');
-        ok = tryPlace(it.cab,it.cls,makePoses(it.cab,pref,it.cls),g,ix,placed,gap,ply,
+        ok = tryWithProgress(it.cab,it.cls,makePoses(it.cab,pref,it.cls),g,ix,placed,gap,ply,
                       O('any',{doorDeck:true,flatOnFloor:true}));
       }
       if(!ok) failed.push(it.cab);
@@ -728,6 +744,7 @@
       return (la-lb) || (a.y-b.y) || (a.z-b.z) || (a.x-b.x);
     });
     placed.forEach((p,i)=>p.seq=i+1);
+    if(onProgress && attemptedCabs.size!==lastProgress) onProgress({attempted:attemptedCabs.size,total:all.length});
     return {placed, failed};
   }
 
@@ -747,7 +764,7 @@
   if(typeof window.setEngineStatus==='function') window.setEngineStatus('Packing rules: V2 active', false);
   if(window.CLO_LEGACY_POSE_ORDER && JSON.stringify(window.CLO_LEGACY_POSE_ORDER)!==JSON.stringify(POSE_ORDER))
     console.error('load-rules-v2: POSE_ORDER drift detected between legacy and V2 engines.');
-  document.dispatchEvent(new CustomEvent('clo:rules-ready'));
+  if(typeof document!=='undefined' && typeof CustomEvent==='function') document.dispatchEvent(new CustomEvent('clo:rules-ready'));
 
   /* ---- tell the crew when a wall cabinet is on its head, and which
           pieces are floating and need blocking ------------------------- */

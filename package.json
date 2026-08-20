@@ -3,6 +3,6 @@
   "private": true,
   "scripts": {
     "test": "node --test tests/*.test.js",
-    "check": "node --check clo-utils.js && node --check load-placement-core.js && node --check packing-runtime.js && node --check manual-layout.js && node --check load-learning.js && node --check end-views.js && node --check load-rules-v2.js && node --check drag-3d.js"
+    "check": "node --check clo-utils.js && node --check load-placement-core.js && node --check packing-runtime.js && node --check packer-worker.js && node --check manual-layout.js && node --check load-learning.js && node --check end-views.js && node --check load-rules-v2.js && node --check drag-3d.js"
   }
 }

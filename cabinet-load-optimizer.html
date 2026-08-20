@@ -71,7 +71,9 @@
       <label class="text-xs text-slate-300" title="Extra safety room, on top of the tip-up diagonal, required before a cabinet may be stood upright. A cabinet is only stood up if sqrt(height² + depth²) + this margin fits under the ceiling.">Stand-up margin
         <input type="number" id="stand-clear" value="3" min="0" step="1" class="!w-14 !bg-slate-800 !border-slate-600 text-white ml-1 inline-block" />"
       </label>
-      <button class="btn btn-green" onclick="optimize()">⚙ Optimize Load</button>
+      <button id="optimize-button" class="btn btn-green" onclick="optimizeAsync()">⚙ Optimize Load</button>
+      <span id="optimize-progress" class="hidden text-[10px] text-slate-300" aria-live="polite"></span>
+      <button id="optimize-cancel" class="btn btn-red hidden !py-1 !px-2 text-xs" onclick="cancelOptimizeAsync()" disabled>Cancel</button>
       <button class="btn btn-gray" onclick="doPrint()">🖨 Print Plans</button>
       <span id="engine-status" class="text-[10px] text-amber-300" aria-live="polite">Packing rules: Legacy active</span>
       <span id="sync-status" class="text-[10px] text-slate-400" aria-live="polite">Saved locally</span>
@@ -991,6 +993,117 @@ function optimize(){
   updateStats();
   document.querySelector('[data-tab="tab-3d"]').click();
   draw3D();
+}
+
+/* =================== ASYNC OPTIMIZE =================== */
+let activeOptimizeRun=null;
+function setOptimizeBusy(busy, text, cancellable){
+  const button=el('optimize-button'), progress=el('optimize-progress'), cancel=el('optimize-cancel');
+  if(button) button.disabled=!!busy;
+  if(progress){ progress.textContent=text||''; progress.classList.toggle('hidden', !busy); }
+  if(cancel){ cancel.classList.toggle('hidden', !busy); cancel.disabled=!cancellable; }
+}
+function currentPackOptions(){
+  const gap=Math.max(0.25, parseFloat(el('gap').value)||1);
+  const allowStack=el('allow-stack').checked;
+  const allowBack=el('allow-back') ? el('allow-back').checked : true;
+  const ply=allowStack ? Math.max(0, parseFloat(el('plywood') && el('plywood').value)||0) : 0;
+  const sm=parseFloat(el('stand-clear') && el('stand-clear').value);
+  return {gap, ply, allowStack, allowBack, standMargin:isNaN(sm)?3:Math.max(0,sm)};
+}
+window.packLoadAsync=function(cabs, g, opt, hooks){
+  const options=hooks||{};
+  return new Promise((resolve,reject)=>{
+    let worker=null, settled=false, startupTimer=null;
+    const finish=(fn,value)=>{
+      if(settled) return;
+      settled=true;
+      if(startupTimer) clearTimeout(startupTimer);
+      if(options.signal) options.signal.removeEventListener('abort', abort);
+      fn(value);
+    };
+    const abort=()=>{
+      if(worker) worker.terminate();
+      const error=new Error('Optimization cancelled.'); error.name='AbortError';
+      finish(reject,error);
+    };
+    try{
+      worker=new Worker('packer-worker.js');
+      if(options.signal){
+        if(options.signal.aborted){ abort(); return; }
+        options.signal.addEventListener('abort', abort, {once:true});
+      }
+      startupTimer=setTimeout(()=>{
+        if(worker) worker.terminate();
+        finish(reject,new Error('Packing Worker startup timed out.'));
+      }, 1500);
+      worker.onmessage=event=>{
+        const message=event.data||{};
+        if(message.type==='ready'){
+          if(message.engine!=='v2'){ worker.terminate(); finish(reject,new Error('Packing Worker did not activate V2.')); return; }
+          clearTimeout(startupTimer); startupTimer=null;
+          worker.postMessage({type:'pack', cabinets:cabs, geom:g, options:opt});
+        }else if(message.type==='progress'){
+          if(typeof options.onProgress==='function') options.onProgress(message);
+        }else if(message.type==='result'){
+          worker.terminate();
+          if(message.engine!=='v2'){ finish(reject,new Error('Packing Worker returned a non-V2 result.')); return; }
+          finish(resolve,message.result);
+        }else if(message.type==='startup-error' || message.type==='runtime-error'){
+          worker.terminate();
+          finish(reject,new Error(message.error||'Packing Worker failed.'));
+        }
+      };
+      worker.onerror=()=>{ if(worker) worker.terminate(); finish(reject,new Error('Packing Worker failed to start.')); };
+    }catch(error){ finish(reject,error); }
+  });
+};
+function applyOptimizedLoad(run, result){
+  if(activeOptimizeRun!==run || run.cancelled) return;
+  results={trailer:run.trailer, geom:run.geom, placed:result.placed, failed:result.failed, gap:run.options.gap, ply:run.options.ply};
+  saveAll(); updateStats();
+  document.querySelector('[data-tab="tab-3d"]').click();
+  draw3D();
+  activeOptimizeRun=null;
+  setOptimizeBusy(false,'',false);
+}
+function runMainThreadFallback(run, reason){
+  if(activeOptimizeRun!==run || run.cancelled) return;
+  setOptimizeBusy(true, 'Optimizing on this device… Worker unavailable; Cancel is unavailable.', false);
+  setTimeout(()=>{
+    if(activeOptimizeRun!==run || run.cancelled) return;
+    try{ applyOptimizedLoad(run, packLoad(cabinets, run.geom, run.options)); }
+    catch(error){ activeOptimizeRun=null; setOptimizeBusy(false,'',false); alert('Optimize failed: '+error.message); }
+  },0);
+}
+function optimizeAsync(){
+  const trailer=trailers.find(t=>t.id===activeTrailerId);
+  if(!trailer){ alert('Select a trailer first (Trailers tab).'); return; }
+  if(cabinets.length===0){ alert('Add cabinets first (Cabinets tab).'); return; }
+  if(activeOptimizeRun) return;
+  const run={trailer, geom:geomOf(trailer), options:currentPackOptions(), cancelled:false, controller:new AbortController()};
+  activeOptimizeRun=run;
+  setOptimizeBusy(true, 'Starting packing Worker…', true);
+  window.packLoadAsync(cabinets, run.geom, run.options, {
+    signal:run.controller.signal,
+    onProgress:progress=>setOptimizeBusy(true, `Optimizing ${progress.attempted} / ${progress.total}…`, true)
+  }).then(result=>applyOptimizedLoad(run,result)).catch(error=>{
+    if(activeOptimizeRun!==run) return;
+    if(error && error.name==='AbortError'){
+      activeOptimizeRun=null;
+      setOptimizeBusy(false,'',false);
+      return;
+    }
+    runMainThreadFallback(run,error);
+  });
+}
+function cancelOptimizeAsync(){
+  const run=activeOptimizeRun;
+  if(!run) return;
+  run.cancelled=true;
+  run.controller.abort();
+  activeOptimizeRun=null;
+  setOptimizeBusy(false,'',false);
 }
 
 /* =================== STATS / SEQUENCE =================== */
