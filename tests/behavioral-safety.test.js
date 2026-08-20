@@ -9,20 +9,25 @@ const core = require('../load-placement-core.js');
 const html = fs.readFileSync(path.join(root, 'cabinet-load-optimizer.html'), 'utf8');
 const manual = fs.readFileSync(path.join(root, 'manual-layout.js'), 'utf8');
 const rules = fs.readFileSync(path.join(root, 'load-rules-v2.js'), 'utf8');
+const runtime = fs.readFileSync(path.join(root, 'packing-runtime.js'), 'utf8');
 const learning = fs.readFileSync(path.join(root, 'load-learning.js'), 'utf8');
 
 function rectangularTrailer(height) {
   return { W:96, H:height, totalL:240, wells:[], ledges:[], gn:null, taper:null };
 }
 
+function loadLegacyPoseOrder() {
+  const sandbox = { window:{ CLOPlacementCore:core }, console:{log(){}, warn(){}, error(){}} };
+  vm.createContext(sandbox);
+  vm.runInContext(runtime, sandbox, {filename:'packing-runtime.js'});
+  return JSON.parse(JSON.stringify(sandbox.window.CLO_LEGACY_POSE_ORDER));
+}
+
 function loadV2() {
   const window = {
     CLOPlacementCore: core,
     validatePoseClearance: core.validatePoseClearance,
-    CLO_LEGACY_POSE_ORDER: {
-      base:['upright','side','back'], tall:['side','back','upright'], wall:['side','upright','back'],
-      flat:['back','side','upright'], pkg:['back','side','upright'], other:['side','upright','back']
-    }
+    CLO_LEGACY_POSE_ORDER: loadLegacyPoseOrder()
   };
   const sandbox = {
     console: { log(){}, warn(){}, error(){} }, window,
@@ -45,12 +50,6 @@ function loadV2() {
   vm.createContext(sandbox);
   vm.runInContext(rules, sandbox, {filename:'load-rules-v2.js'});
   return Object.assign(sandbox.window.CLO_RULES_V2, {runtime:sandbox.window});
-}
-
-function extractPoseOrder(source) {
-  const match = source.match(/const POSE_ORDER\s*=\s*(\{[\s\S]*?\n\s*\});/);
-  assert.ok(match, 'POSE_ORDER literal was found');
-  return vm.runInNewContext(`(${match[1]})`);
 }
 
 function loadImportGuards() {
@@ -296,7 +295,11 @@ test('clear hand placements persists immediately and all user-controlled plan/wa
 });
 
 test('the fallback and active V2 pose-order copies stay identical and diagnostics expose V2 as active', () => {
-  assert.deepEqual(JSON.parse(JSON.stringify(extractPoseOrder(html))), JSON.parse(JSON.stringify(extractPoseOrder(rules))));
+  const api = loadV2();
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(api.runtime.CLO_LEGACY_POSE_ORDER)),
+    JSON.parse(JSON.stringify(api.poseOrder))
+  );
   assert.match(rules, /window\.CLO_ACTIVE_ENGINE = 'v2'/);
   assert.match(rules, /setEngineStatus\('Packing rules: V2 active'/);
   assert.match(learning, /POSE_ORDER\.\$\{cls\} in load-rules-v2\.js/);
