@@ -285,12 +285,14 @@
 
   /* Returns null if the spot is illegal, otherwise a report used for scoring
      and for recording what the piece ended up resting on. */
-  function canPlace(g,ix,gap,x,y,z,w,h,d,ply,cpose,ccls,ccab,nearIn,standMargin){
+  function canPlace(g,ix,gap,x,y,z,w,h,d,ply,cpose,ccls,ccab,nearIn,standMargin,knownWidth,knownFloorY,collisionChecked){
     const eps=0.01;
-    const poseClearance = typeof window.validatePoseClearance==='function'
-      ? window.validatePoseClearance(ccab, cpose, y, g.H, standMargin || 0)
-      : {ok:cpose!=='upright'};
-    if(!poseClearance.ok) return null;
+    if(cpose==='upright'){
+      const poseClearance = typeof window.validatePoseClearance==='function'
+        ? window.validatePoseClearance(ccab, cpose, y, g.H, standMargin || 0)
+        : {ok:false};
+      if(!poseClearance.ok) return null;
+    }
     if(x<-eps || z<-eps) return null;
     if(y+h > g.H+eps) return null;
     if(z+d > g.totalL+eps) return null;
@@ -299,25 +301,33 @@
       if(inGN && z+d > g.gn.len+eps) return null;
       if(inGN && y < g.gn.rise-eps) return null;
     }
-    const wr = availWidthAt(g,z);
+    const wr = knownWidth || availWidthAt(g,z);
     if(x < wr.min-eps || x+w > wr.max+eps) return null;
-    const box={x,y,z,w,h,d};
-    const floorY=floorYAt(g,z);
+    const floorY=knownFloorY===undefined ? floorYAt(g,z) : knownFloorY;
     if(cpose==='upright' && !isFreeStandingUprightStable(w,h,d)) return null;
     if(cpose==='back' && Math.abs(y-floorY)<0.5 && !flatOnFloorOK(ccls)) return null;
-    for(const wl of g.wells)  if(boxesOverlapXZ(box,wl,0) && boxesOverlapY(box,wl)) return null;
-    if(g.ledges) for(const ob of g.ledges) if(boxesOverlapXZ(box,ob,0) && boxesOverlapY(box,ob)) return null;
+    for(const ob of g.wells){
+      if(x < ob.x+ob.w && ob.x < x+w && z < ob.z+ob.d && ob.z < z+d &&
+         y < ob.y+ob.h-0.01 && ob.y < y+h-0.01) return null;
+    }
+    if(g.ledges) for(const ob of g.ledges){
+      if(x < ob.x+ob.w && ob.x < x+w && z < ob.z+ob.d && ob.z < z+d &&
+         y < ob.y+ob.h-0.01 && ob.y < y+h-0.01) return null;
+    }
 
     const near = nearIn || idxNear(ix, z-gap-V2.foreRun-1, z+d+gap+1, _near);
-    for(let i=0;i<near.length;i++){ const p=near[i];
-      if(boxesOverlapY(box,p) && boxesOverlapXZ(box,p,gap)) return null; }
+    if(!collisionChecked) for(let i=0;i<near.length;i++){ const p=near[i];
+      if(y < p.y+p.h-0.01 && p.y < y+h-0.01 &&
+         x < p.x+p.w+gap && p.x < x+w+gap &&
+         z < p.z+p.d+gap && p.z < z+d+gap) return null;
+    }
 
     /* A face-up cabinet can continue a protected stack only through its one
        direct compatible face-up rider. Ordinary riders retain the old one-layer
        behavior through supportTier/freeTier. */
     const cIsFaceUp = (cpose==='back' && !flatOnFloorOK(ccls));
 
-    const fy = floorYAt(g,z);
+    const fy = floorY;
     const tol = gap + 0.75;
 
     /* contact — the measure of how snug the spot is */
@@ -471,7 +481,7 @@
       zs = u; }
     zs.sort((a,b)=>a-b);
 
-    const nearBuf=[], ys=[], xs=[], ySeen=new Set(), spans=[];
+    const nearBuf=[], ys=[], xs=[], relevantNear=[], colliders=[], ySeen=new Set(), spans=[];
     const minW = poses.reduce((m,p)=>Math.min(m,p.w),Infinity);
     let best=null, zCap=Infinity, pz=-99;
 
@@ -526,6 +536,11 @@
           if(y+o2.h > g.H+0.01) continue;
           if(o2.w > wr.max-wr.min+0.01) continue;
 
+          colliders.length=0;
+          for(let i=0;i<near.length;i++){ const p=near[i];
+            const collisionZ = z < p.z+p.d+gap && p.z < z+o2.d+gap;
+            if(collisionZ && y < p.y+p.h-0.01 && p.y < y+o2.h-0.01) colliders.push(p);
+          }
           xs.length=0;
           xs.push(Math.max(0,wr.min), wr.max-o2.w);
           for(let i=0;i<near.length;i++){ const p=near[i];
@@ -538,7 +553,12 @@
           for(const x of xs){
             if(x < Math.max(0,wr.min)-0.01 || x > wr.max-o2.w+0.01) continue;
             if(x-px < 0.24) continue; px=x;
-            const rep = canPlace(g,ix,gap,x,y,z,o2.w,o2.h,o2.d,ply,o2.pose,cls,cab,near,o.standMargin || 0);
+            let collides=false;
+            for(let i=0;i<colliders.length;i++){ const p=colliders[i];
+              if(x < p.x+p.w+gap && p.x < x+o2.w+gap){ collides=true; break; }
+            }
+            if(collides) continue;
+            const rep = canPlace(g,ix,gap,x,y,z,o2.w,o2.h,o2.d,ply,o2.pose,cls,cab,near,o.standMargin || 0,wr,fy,true);
             if(!rep) continue;
             if(!o.doorDeck && rep.onDoors) continue;   // door decks only in the retry pass
             const sc = scoreOf(rep, x,y,z,o2.w,o2.h,o2.d, g);
